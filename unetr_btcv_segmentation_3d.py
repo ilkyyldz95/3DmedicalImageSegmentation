@@ -35,13 +35,17 @@ from monai.data import (
     decollate_batch,
 )
 
-
 import torch
+torch.autograd.set_detect_anomaly(True)
 
+# Tuned parameters based on dataset
 train_size = 50
 val_size = 33
 n_classes = 14
+root_dir = "./results/"
+data_dir = "./dataset/"
 learning_rate = 1e-4
+crop_size = 16
 """
 - keys for image and label
 >>> labels = os.listdir("labelsTr")
@@ -62,9 +66,7 @@ n_seg_classes = 2 (edema / tumor core)
 n_img_channels, img_dim_x, img_dim_y, img_dim_z = 1, 91, 109, 91
 """
 
-root_dir = "./results/"
-data_dir = "./dataset/"
-crop_size = 16
+# Data transforms
 train_transforms = Compose(
     [
         LoadImaged(keys=["image", "label"]),
@@ -161,11 +163,6 @@ val_loader = DataLoader(
     val_ds, batch_size=1, shuffle=False, num_workers=4, pin_memory=True
 )
 
-slice_map = {
-    "DET0000101_avg.nii.gz": 0,
-    "DET0000201_avg.nii.gz": 1,
-    "DET0000801_avg.nii.gz": 2,
-}
 case_num = 0
 img_name = os.path.split(val_ds[case_num]["image_meta_dict"]["filename_or_obj"])[1]
 img = val_ds[case_num]["image"]
@@ -177,6 +174,7 @@ print(f"image shape: {img_shape}, label shape: {label_shape}")
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Architecture
 model = UNETR(
     in_channels=1,
     out_channels=n_classes,
@@ -256,8 +254,8 @@ def train(global_step, train_loader, dice_val_best, global_step_best):
                     model.state_dict(), os.path.join(root_dir, "best_metric_model.pth")
                 )
                 print(
-                    "Model Was Saved ! Current Best Avg. Dice: {} Current Avg. Dice: {}".format(
-                        dice_val_best, dice_val
+                    "Model Was Saved At Global Step {}! Current Best Avg. Dice: {} Current Avg. Dice: {}".format(
+                        global_step, dice_val_best, dice_val
                     )
                 )
             else:
@@ -284,6 +282,8 @@ while global_step < max_iterations:
     global_step, dice_val_best, global_step_best = train(
         global_step, train_loader, dice_val_best, global_step_best
     )
+
+# Evaluation
 model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
 
 print(
@@ -323,13 +323,13 @@ with torch.no_grad():
     plt.figure("check", (18, 6))
     plt.subplot(1, 3, 1)
     plt.title("image")
-    plt.imshow(val_inputs.cpu().numpy()[0, 0, :, :, slice_map[img_name]], cmap="gray")
+    plt.imshow(val_inputs.cpu().numpy()[0, 0, :, :, 5], cmap="gray")
     plt.subplot(1, 3, 2)
     plt.title("label")
-    plt.imshow(val_labels.cpu().numpy()[0, 0, :, :, slice_map[img_name]])
+    plt.imshow(val_labels.cpu().numpy()[0, 0, :, :, 5])
     plt.subplot(1, 3, 3)
     plt.title("output")
     plt.imshow(
-        torch.argmax(val_outputs, dim=1).detach().cpu()[0, :, :, slice_map[img_name]]
+        torch.argmax(val_outputs, dim=1).detach().cpu()[0, :, :, 5]
     )
     plt.savefig("examples.png")
