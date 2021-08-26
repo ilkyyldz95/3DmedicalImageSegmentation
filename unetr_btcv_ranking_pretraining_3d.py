@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from monai.losses import DiceCELoss
 from monai.inferers import sliding_window_inference
 from monai.transforms import (
     AsDiscrete,
@@ -25,7 +24,6 @@ from monai.transforms import (
 )
 
 from monai.config import print_config
-from monai.metrics import DiceMetric
 from monai.networks.nets import UNETR
 
 from monai.data import (
@@ -42,9 +40,10 @@ torch.autograd.set_detect_anomaly(True)
 train_size = 50
 val_size = 33
 n_classes = 14
-root_dir = "./results/"
+root_dir = "./results_ranking/"
 data_dir = "./dataset/"
 learning_rate = 1e-4
+neighbour_size = 4
 crop_size = 16
 """
 - keys for image and label
@@ -65,6 +64,69 @@ label shape: torch.Size([n_seg_classes, img_dim_x, img_dim_y, img_dim_z])
 n_seg_classes = 2 (edema / tumor core)
 n_img_channels, img_dim_x, img_dim_y, img_dim_z = 1, 91, 109, 91
 """
+
+def BTLoss(y_pred, optimizer):
+    """
+    y_pred: (batch, n_labels, x, y, z)
+    Negative log likelihood of Bradley-Terry Penalty, to be minimized. y = beta.*x
+    comp_pred:si-sj
+    """
+    print(y_pred.shape)
+    cum_loss = 0
+    # Axis 1
+    similar_pred = y_pred.clone()[:, :, :neighbour_size, :, :] \
+                   - y_pred.clone()[:, :, neighbour_size:2*neighbour_size, :, :]
+    dissimilar_pred = y_pred.clone()[:, :, :neighbour_size, :, :] - y_pred.clone()[:, :, -neighbour_size:, :, :]
+    print(similar_pred.shape, dissimilar_pred.shape)
+    comp_pred = similar_pred - dissimilar_pred
+    loss = torch.mean(torch.log(1 + torch.exp((comp_pred))))
+    loss.backward(retain_graph=True)
+    cum_loss += loss.item()
+    similar_pred = y_pred.clone()[:, :, -neighbour_size:, :, :] \
+                   - y_pred.clone()[:, :, -2 * neighbour_size:-neighbour_size, :, :]
+    dissimilar_pred = y_pred.clone()[:, :, -neighbour_size:, :, :] - y_pred.clone()[:, :, :neighbour_size, :, :]
+    print(similar_pred.shape, dissimilar_pred.shape)
+    comp_pred = similar_pred - dissimilar_pred
+    loss = torch.mean(torch.log(1 + torch.exp((comp_pred))))
+    loss.backward(retain_graph=True)
+    cum_loss += loss.item()
+    # Axis 2
+    similar_pred = y_pred.clone()[:, :, :, :neighbour_size, :]\
+                   - y_pred.clone()[:, :, :, neighbour_size:2 * neighbour_size, :]
+    dissimilar_pred = y_pred.clone()[:, :, :, :neighbour_size, :] - y_pred.clone()[:, :, :, -neighbour_size:, :]
+    print(similar_pred.shape, dissimilar_pred.shape)
+    comp_pred = similar_pred - dissimilar_pred
+    loss = torch.mean(torch.log(1 + torch.exp((comp_pred))))
+    loss.backward(retain_graph=True)
+    cum_loss += loss.item()
+    similar_pred = y_pred.clone()[:, :, :, -neighbour_size:, :] \
+                   - y_pred.clone()[:, :, :, -2 * neighbour_size:-neighbour_size, :]
+    dissimilar_pred = y_pred.clone()[:, :, :, -neighbour_size:, :] - y_pred.clone()[:, :, :, :neighbour_size, :]
+    print(similar_pred.shape, dissimilar_pred.shape)
+    comp_pred = similar_pred - dissimilar_pred
+    loss = torch.mean(torch.log(1 + torch.exp((comp_pred))))
+    loss.backward(retain_graph=True)
+    cum_loss += loss.item()
+    # Axis 3
+    similar_pred = y_pred.clone()[:, :, :, :, :neighbour_size] \
+                   - y_pred.clone()[:, :, :, :, neighbour_size:2 * neighbour_size]
+    dissimilar_pred = y_pred.clone()[:, :, :, :, :neighbour_size] - y_pred.clone()[:, :, :, :, -neighbour_size:]
+    print(similar_pred.shape, dissimilar_pred.shape)
+    comp_pred = similar_pred - dissimilar_pred
+    loss = torch.mean(torch.log(1 + torch.exp((comp_pred))))
+    loss.backward(retain_graph=True)
+    cum_loss += loss.item()
+    similar_pred = y_pred.clone()[:, :, :, :, -neighbour_size:] \
+                   - y_pred.clone()[:, :, :, :, -2 * neighbour_size:-neighbour_size]
+    dissimilar_pred = y_pred.clone()[:, :, :, :, -neighbour_size:] - y_pred.clone()[:, :, :, :, :neighbour_size]
+    print(similar_pred.shape, dissimilar_pred.shape)
+    comp_pred = similar_pred - dissimilar_pred
+    loss = torch.mean(torch.log(1 + torch.exp((comp_pred))))
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+    cum_loss += loss.item()
+    return cum_loss
 
 # Data transforms
 train_transforms = Compose(
@@ -189,39 +251,12 @@ model = UNETR(
     dropout_rate=0.0,
 ).to(device)
 
-loss_function = DiceCELoss(to_onehot_y=True, softmax=True)
 torch.backends.cudnn.benchmark = True
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-5)
 
-def validation(epoch_iterator_val):
-    model.eval()
-    dice_vals = list()
-    with torch.no_grad():
-        for step, batch in enumerate(epoch_iterator_val):
-            val_inputs, val_labels = (batch["image"].cuda(), batch["label"].cuda())
-            val_outputs = sliding_window_inference(val_inputs, (crop_size, crop_size, crop_size), 4, model)
-            val_labels_list = decollate_batch(val_labels)
-            val_labels_convert = [
-                post_label(val_label_tensor) for val_label_tensor in val_labels_list
-            ]
-            val_outputs_list = decollate_batch(val_outputs)
-            val_output_convert = [
-                post_pred(val_pred_tensor) for val_pred_tensor in val_outputs_list
-            ]
-            dice_metric(y_pred=val_output_convert, y=val_labels_convert)
-            dice = dice_metric.aggregate().item()
-            dice_vals.append(dice)
-            epoch_iterator_val.set_description(
-                "Validate (%d / %d Steps) (dice=%2.5f)" % (global_step, 10.0, dice)
-            )
-        dice_metric.reset()
-    mean_dice_val = np.mean(dice_vals)
-    return mean_dice_val
-
-
-def train(global_step, train_loader, dice_val_best, global_step_best):
+def train(global_step, train_loader):
     model.train()
-    epoch_loss = 0
+    epoch_ranking_loss = 0
     epoch_iterator = tqdm(
         train_loader, desc="Training (X / X Steps) (loss=X.X)", dynamic_ncols=True
     )
@@ -229,107 +264,40 @@ def train(global_step, train_loader, dice_val_best, global_step_best):
         step += 1
         x, y = (batch["image"].cuda(), batch["label"].cuda())
         logit_map = model(x)
-        loss = loss_function(logit_map, y)
-        loss.backward()
-        epoch_loss += loss.item()
-        optimizer.step()
-        optimizer.zero_grad()
+        ranking_loss = BTLoss(logit_map, optimizer)
+        epoch_ranking_loss += ranking_loss
         epoch_iterator.set_description(
-            "Training (%d / %d Steps) (loss=%2.5f)" % (global_step, max_iterations, loss)
+            "Training (%d / %d Steps) (ranking loss=%2.5f)" % (global_step, max_iterations, ranking_loss)
         )
         if (
             global_step % eval_num == 0 and global_step != 0
         ) or global_step == max_iterations:
-            epoch_iterator_val = tqdm(
-                val_loader, desc="Validate (X / X Steps) (dice=X.X)", dynamic_ncols=True
+            epoch_ranking_loss /= step
+            epoch_ranking_loss_values.append(epoch_ranking_loss)
+            torch.save(
+                model.state_dict(), os.path.join(root_dir, "best_metric_model.pth")
             )
-            dice_val = validation(epoch_iterator_val)
-            epoch_loss /= step
-            epoch_loss_values.append(epoch_loss)
-            metric_values.append(dice_val)
-            if dice_val > dice_val_best:
-                dice_val_best = dice_val
-                global_step_best = global_step
-                torch.save(
-                    model.state_dict(), os.path.join(root_dir, "best_metric_model.pth")
-                )
-                print(
-                    "Model Was Saved At Global Step {}! Current Best Avg. Dice: {} Current Avg. Dice: {}".format(
-                        global_step, dice_val_best, dice_val
-                    )
-                )
-            else:
-                print(
-                    "Model Was Not Saved ! Current Best Avg. Dice: {} Current Avg. Dice: {}".format(
-                        dice_val_best, dice_val
-                    )
-                )
+            print(
+                "Model Was Saved At Global Step {}!".format(global_step)
+            )
         global_step += 1
-    return global_step, dice_val_best, global_step_best
+    return global_step
 
 
 max_iterations = 25000
-eval_num = 500
-post_label = AsDiscrete(to_onehot=True, n_classes=n_classes)
-post_pred = AsDiscrete(argmax=True, to_onehot=True, n_classes=n_classes)
-dice_metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False)
 global_step = 0
-dice_val_best = 0.0
-global_step_best = 0
-epoch_loss_values = []
-metric_values = []
+epoch_ranking_loss_values = []
 while global_step < max_iterations:
-    global_step, dice_val_best, global_step_best = train(
-        global_step, train_loader, dice_val_best, global_step_best
-    )
+    global_step = train(global_step, train_loader)
 
 # Evaluation
 model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
 
-print(
-    f"train completed, best_metric: {dice_val_best:.4f} "
-    f"at iteration: {global_step_best}"
-)
-
 # Performance visualization
 plt.figure("train", (12, 6))
-plt.subplot(1, 2, 1)
 plt.title("Iteration Average Loss")
-x = [eval_num * (i + 1) for i in range(len(epoch_loss_values))]
-y = epoch_loss_values
+x = [eval_num * (i + 1) for i in range(len(epoch_ranking_loss_values))]
+y = epoch_ranking_loss_values
 plt.xlabel("Iteration")
 plt.plot(x, y)
-plt.subplot(1, 2, 2)
-plt.title("Val Mean Dice")
-x = [eval_num * (i + 1) for i in range(len(metric_values))]
-y = metric_values
-plt.xlabel("Iteration")
-plt.plot(x, y)
-plt.savefig(os.path.join(root_dir, "train_val.png"))
-
-# Example visualization
-case_num = 4
-model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
-model.eval()
-with torch.no_grad():
-    img_name = os.path.split(val_ds[case_num]["image_meta_dict"]["filename_or_obj"])[1]
-    img = val_ds[case_num]["image"]
-    label = val_ds[case_num]["label"]
-    val_inputs = torch.unsqueeze(img, 1).cuda()
-    val_labels = torch.unsqueeze(label, 1).cuda()
-    val_outputs = sliding_window_inference(
-        val_inputs, (crop_size, crop_size, crop_size), 4, model, overlap=0.8
-    )
-    plt.figure("check", (18, 6))
-    plt.subplot(1, 3, 1)
-    plt.title("image")
-    plt.imshow(val_inputs.cpu().numpy()[0, 0, :, :, 5], cmap="gray")
-    plt.subplot(1, 3, 2)
-    plt.title("label")
-    plt.imshow(val_labels.cpu().numpy()[0, 0, :, :, 5])
-    plt.subplot(1, 3, 3)
-    plt.title("output")
-    plt.imshow(
-        torch.argmax(val_outputs, dim=1).detach().cpu()[0, :, :, 5]
-    )
-    plt.savefig(os.path.join(root_dir, "examples.png"))
+plt.savefig(os.path.join(root_dir, "train.png"))
