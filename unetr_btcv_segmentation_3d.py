@@ -36,16 +36,8 @@ from monai.data import (
 )
 
 import torch
-torch.autograd.set_detect_anomaly(True)
+import argparse
 
-# Tuned parameters based on dataset
-train_size = 50
-val_size = 33
-n_classes = 14
-root_dir = "./results/"
-data_dir = "./dataset/"
-learning_rate = 1e-4
-crop_size = 16
 """
 - keys for image and label
 >>> labels = os.listdir("labelsTr")
@@ -65,134 +57,6 @@ label shape: torch.Size([n_seg_classes, img_dim_x, img_dim_y, img_dim_z])
 n_seg_classes = 2 (edema / tumor core)
 n_img_channels, img_dim_x, img_dim_y, img_dim_z = 1, 91, 109, 91
 """
-
-# Data transforms
-train_transforms = Compose(
-    [
-        LoadImaged(keys=["image", "label"]),
-        AddChanneld(keys=["image", "label"]),
-        Spacingd(
-            keys=["image", "label"],
-            pixdim=(1.5, 1.5, 2.0),
-            mode=("bilinear", "nearest"),
-        ),
-        Orientationd(keys=["image", "label"], axcodes="RAS"),
-        ScaleIntensityRanged(
-            keys=["image"],
-            a_min=-175,
-            a_max=250,
-            b_min=0.0,
-            b_max=1.0,
-            clip=True,
-        ),
-        CropForegroundd(keys=["image", "label"], source_key="image"),
-        RandCropByPosNegLabeld(
-            keys=["image", "label"],
-            label_key="label",
-            spatial_size=(crop_size, crop_size, crop_size),
-            pos=1,
-            neg=1,
-            num_samples=4,
-            image_key="image",
-            image_threshold=0,
-        ),
-        RandFlipd(
-            keys=["image", "label"],
-            spatial_axis=[0],
-            prob=0.10,
-        ),
-        RandFlipd(
-            keys=["image", "label"],
-            spatial_axis=[1],
-            prob=0.10,
-        ),
-        RandFlipd(
-            keys=["image", "label"],
-            spatial_axis=[2],
-            prob=0.10,
-        ),
-        RandRotate90d(
-            keys=["image", "label"],
-            prob=0.10,
-            max_k=3,
-        ),
-        RandShiftIntensityd(
-            keys=["image"],
-            offsets=0.10,
-            prob=0.50,
-        ),
-        ToTensord(keys=["image", "label"]),
-    ]
-)
-val_transforms = Compose(
-    [
-        LoadImaged(keys=["image", "label"]),
-        AddChanneld(keys=["image", "label"]),
-        Spacingd(
-            keys=["image", "label"],
-            pixdim=(1.5, 1.5, 2.0),
-            mode=("bilinear", "nearest"),
-        ),
-        Orientationd(keys=["image", "label"], axcodes="RAS"),
-        ScaleIntensityRanged(
-            keys=["image"], a_min=-175, a_max=250, b_min=0.0, b_max=1.0, clip=True
-        ),
-        CropForegroundd(keys=["image", "label"], source_key="image"),
-        ToTensord(keys=["image", "label"]),
-    ]
-)
-
-split_JSON = "dataset_0.json"
-datasets = data_dir + split_JSON
-datalist = load_decathlon_datalist(datasets, True, "training")
-val_files = load_decathlon_datalist(datasets, True, "validation")
-train_ds = CacheDataset(
-    data=datalist,
-    transform=train_transforms,
-    cache_num=train_size,
-    cache_rate=1.0,
-    num_workers=8,
-)
-train_loader = DataLoader(
-    train_ds, batch_size=1, shuffle=True, num_workers=8, pin_memory=True
-)
-val_ds = CacheDataset(
-    data=val_files, transform=val_transforms, cache_num=val_size, cache_rate=1.0, num_workers=4
-)
-val_loader = DataLoader(
-    val_ds, batch_size=1, shuffle=False, num_workers=4, pin_memory=True
-)
-
-case_num = 0
-img_name = os.path.split(val_ds[case_num]["image_meta_dict"]["filename_or_obj"])[1]
-img = val_ds[case_num]["image"]
-label = val_ds[case_num]["label"]
-img_shape = img.shape
-label_shape = label.shape
-print(f"image shape: {img_shape}, label shape: {label_shape}")
-
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Architecture
-model = UNETR(
-    in_channels=1,
-    out_channels=n_classes,
-    img_size=(crop_size, crop_size, crop_size),
-    feature_size=crop_size,
-    hidden_size=768,
-    mlp_dim=3072,
-    num_heads=12,
-    pos_embed="perceptron",
-    norm_name="instance",
-    res_block=True,
-    dropout_rate=0.0,
-).to(device)
-
-loss_function = DiceCELoss(to_onehot_y=True, softmax=True)
-torch.backends.cudnn.benchmark = True
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-5)
-
 def validation(epoch_iterator_val):
     model.eval()
     dice_vals = list()
@@ -267,69 +131,235 @@ def train(global_step, train_loader, dice_val_best, global_step_best):
         global_step += 1
     return global_step, dice_val_best, global_step_best
 
+if __name__ == '__main__':
+    """
+    python unetr_btcv_ranking_pretraining_3d.py "./dataset/" "./results_segmentation" 
+                                                14 50 33 16 0.0001 "ranking" 
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument('data_dir', type=str, default="./dataset/")
+    parser.add_argument('root_dir', type=str, default="./results_segmentation")
+    parser.add_argument('n_classes', type=int, default=14)
+    parser.add_argument('train_size', type=int, default=50)
+    parser.add_argument('val_size', type=int, default=33)
+    parser.add_argument('crop_size', type=int, default=16)
+    parser.add_argument('learning_rate', type=float, default=0.0001)
+    parser.add_argument('pretrained', type=str, default="ranking")
+    args = parser.parse_args()
 
-max_iterations = 25000
-eval_num = 500
-post_label = AsDiscrete(to_onehot=True, n_classes=n_classes)
-post_pred = AsDiscrete(argmax=True, to_onehot=True, n_classes=n_classes)
-dice_metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False)
-global_step = 0
-dice_val_best = 0.0
-global_step_best = 0
-epoch_loss_values = []
-metric_values = []
-while global_step < max_iterations:
-    global_step, dice_val_best, global_step_best = train(
-        global_step, train_loader, dice_val_best, global_step_best
+    # Dataset parameters
+    n_classes = args.n_classes
+    train_size = args.train_size
+    val_size = args.val_size
+    data_dir = args.data_dir
+
+    # Tuned parameters based on dataset
+    root_dir = args.root_dir
+    if args.pretrained != "":
+        args.root_dir += "_pretrained_" + args.pretrained
+    learning_rate = args.learning_rate
+    crop_size = args.crop_size  # bottleneck features are 2 dimensional
+
+    if not os.path.isdir(root_dir):
+        os.mkdir(root_dir)
+
+    # Data transforms
+    train_transforms = Compose(
+        [
+            LoadImaged(keys=["image", "label"]),
+            AddChanneld(keys=["image", "label"]),
+            Spacingd(
+                keys=["image", "label"],
+                pixdim=(1.5, 1.5, 2.0),
+                mode=("bilinear", "nearest"),
+            ),
+            Orientationd(keys=["image", "label"], axcodes="RAS"),
+            ScaleIntensityRanged(
+                keys=["image"],
+                a_min=-175,
+                a_max=250,
+                b_min=0.0,
+                b_max=1.0,
+                clip=True,
+            ),
+            CropForegroundd(keys=["image", "label"], source_key="image"),
+            RandCropByPosNegLabeld(
+                keys=["image", "label"],
+                label_key="label",
+                spatial_size=(crop_size, crop_size, crop_size),
+                pos=1,
+                neg=1,
+                num_samples=4,
+                image_key="image",
+                image_threshold=0,
+            ),
+            RandFlipd(
+                keys=["image", "label"],
+                spatial_axis=[0],
+                prob=0.10,
+            ),
+            RandFlipd(
+                keys=["image", "label"],
+                spatial_axis=[1],
+                prob=0.10,
+            ),
+            RandFlipd(
+                keys=["image", "label"],
+                spatial_axis=[2],
+                prob=0.10,
+            ),
+            RandRotate90d(
+                keys=["image", "label"],
+                prob=0.10,
+                max_k=3,
+            ),
+            RandShiftIntensityd(
+                keys=["image"],
+                offsets=0.10,
+                prob=0.50,
+            ),
+            ToTensord(keys=["image", "label"]),
+        ]
+    )
+    val_transforms = Compose(
+        [
+            LoadImaged(keys=["image", "label"]),
+            AddChanneld(keys=["image", "label"]),
+            Spacingd(
+                keys=["image", "label"],
+                pixdim=(1.5, 1.5, 2.0),
+                mode=("bilinear", "nearest"),
+            ),
+            Orientationd(keys=["image", "label"], axcodes="RAS"),
+            ScaleIntensityRanged(
+                keys=["image"], a_min=-175, a_max=250, b_min=0.0, b_max=1.0, clip=True
+            ),
+            CropForegroundd(keys=["image", "label"], source_key="image"),
+            ToTensord(keys=["image", "label"]),
+        ]
     )
 
-# Evaluation
-model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
+    # Data loader
+    split_JSON = "dataset_0.json"
+    datasets = data_dir + split_JSON
+    datalist = load_decathlon_datalist(datasets, True, "training")
+    val_files = load_decathlon_datalist(datasets, True, "validation")
+    train_ds = CacheDataset(
+        data=datalist,
+        transform=train_transforms,
+        cache_num=train_size,
+        cache_rate=1.0,
+        num_workers=8,
+    )
+    train_loader = DataLoader(
+        train_ds, batch_size=1, shuffle=True, num_workers=8, pin_memory=True
+    )
+    val_ds = CacheDataset(
+        data=val_files, transform=val_transforms, cache_num=val_size, cache_rate=1.0, num_workers=4
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=1, shuffle=False, num_workers=4, pin_memory=True
+    )
 
-print(
-    f"train completed, best_metric: {dice_val_best:.4f} "
-    f"at iteration: {global_step_best}"
-)
-
-# Performance visualization
-plt.figure("train", (12, 6))
-plt.subplot(1, 2, 1)
-plt.title("Iteration Average Loss")
-x = [eval_num * (i + 1) for i in range(len(epoch_loss_values))]
-y = epoch_loss_values
-plt.xlabel("Iteration")
-plt.plot(x, y)
-plt.subplot(1, 2, 2)
-plt.title("Val Mean Dice")
-x = [eval_num * (i + 1) for i in range(len(metric_values))]
-y = metric_values
-plt.xlabel("Iteration")
-plt.plot(x, y)
-plt.savefig(os.path.join(root_dir, "train_val.png"))
-
-# Example visualization
-case_num = 4
-model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
-model.eval()
-with torch.no_grad():
+    case_num = 0
     img_name = os.path.split(val_ds[case_num]["image_meta_dict"]["filename_or_obj"])[1]
     img = val_ds[case_num]["image"]
     label = val_ds[case_num]["label"]
-    val_inputs = torch.unsqueeze(img, 1).cuda()
-    val_labels = torch.unsqueeze(label, 1).cuda()
-    val_outputs = sliding_window_inference(
-        val_inputs, (crop_size, crop_size, crop_size), 4, model, overlap=0.8
+    img_shape = img.shape
+    label_shape = label.shape
+    print(f"image shape: {img_shape}, label shape: {label_shape}")
+
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Architecture
+    model = UNETR(
+        in_channels=1,
+        out_channels=n_classes,
+        img_size=(crop_size, crop_size, crop_size),
+        feature_size=16,
+        hidden_size=768,
+        mlp_dim=3072,
+        num_heads=12,
+        pos_embed="perceptron",
+        norm_name="instance",
+        res_block=True,
+        dropout_rate=0.0,
+    ).to(device)
+
+    # Load pretrained model if exists
+    if args.pretrained != "":
+        print("Loading pretrained model", args.pretrained)
+        model.load_state_dict(torch.load("./results_" + args.pretrained + "/recon_best_metric_model.pth"))
+
+    # Loss and optimizer
+    loss_function = DiceCELoss(to_onehot_y=True, softmax=True)
+    torch.backends.cudnn.benchmark = True
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+
+    # Training
+    max_iterations = 25000
+    eval_num = 500
+    post_label = AsDiscrete(to_onehot=True, n_classes=n_classes)
+    post_pred = AsDiscrete(argmax=True, to_onehot=True, n_classes=n_classes)
+    dice_metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False)
+    global_step = 0
+    dice_val_best = 0.0
+    global_step_best = 0
+    epoch_loss_values = []
+    metric_values = []
+    while global_step < max_iterations:
+        global_step, dice_val_best, global_step_best = train(
+            global_step, train_loader, dice_val_best, global_step_best
+        )
+
+    # Evaluation
+    model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
+
+    print(
+        f"train completed, best_metric: {dice_val_best:.4f} "
+        f"at iteration: {global_step_best}"
     )
-    plt.figure("check", (18, 6))
-    plt.subplot(1, 3, 1)
-    plt.title("image")
-    plt.imshow(val_inputs.cpu().numpy()[0, 0, :, :, 5], cmap="gray")
-    plt.subplot(1, 3, 2)
-    plt.title("label")
-    plt.imshow(val_labels.cpu().numpy()[0, 0, :, :, 5])
-    plt.subplot(1, 3, 3)
-    plt.title("output")
-    plt.imshow(
-        torch.argmax(val_outputs, dim=1).detach().cpu()[0, :, :, 5]
-    )
-    plt.savefig(os.path.join(root_dir, "examples.png"))
+
+    # Performance visualization
+    plt.figure("train", (12, 6))
+    plt.subplot(1, 2, 1)
+    plt.title("Iteration Average Loss")
+    x = [eval_num * (i + 1) for i in range(len(epoch_loss_values))]
+    y = epoch_loss_values
+    plt.xlabel("Iteration")
+    plt.plot(x, y)
+    plt.subplot(1, 2, 2)
+    plt.title("Val Mean Dice")
+    x = [eval_num * (i + 1) for i in range(len(metric_values))]
+    y = metric_values
+    plt.xlabel("Iteration")
+    plt.plot(x, y)
+    plt.savefig(os.path.join(root_dir, "train_val.png"))
+
+    # Example visualization
+    case_num = 4
+    model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
+    model.eval()
+    with torch.no_grad():
+        img_name = os.path.split(val_ds[case_num]["image_meta_dict"]["filename_or_obj"])[1]
+        img = val_ds[case_num]["image"]
+        label = val_ds[case_num]["label"]
+        val_inputs = torch.unsqueeze(img, 1).cuda()
+        val_labels = torch.unsqueeze(label, 1).cuda()
+        val_outputs = sliding_window_inference(
+            val_inputs, (crop_size, crop_size, crop_size), 4, model, overlap=0.8
+        )
+        plt.figure("check", (18, 6))
+        plt.subplot(1, 3, 1)
+        plt.title("image")
+        plt.imshow(val_inputs.cpu().numpy()[0, 0, :, :, 5], cmap="gray")
+        plt.subplot(1, 3, 2)
+        plt.title("label")
+        plt.imshow(val_labels.cpu().numpy()[0, 0, :, :, 5])
+        plt.subplot(1, 3, 3)
+        plt.title("output")
+        plt.imshow(
+            torch.argmax(val_outputs, dim=1).detach().cpu()[0, :, :, 5]
+        )
+        plt.savefig(os.path.join(root_dir, "examples.png"))
