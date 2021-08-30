@@ -134,7 +134,7 @@ def train(global_step, train_loader, dice_val_best, global_step_best):
 if __name__ == '__main__':
     """
     python unetr_btcv_ranking_pretraining_3d.py "./dataset/" "./results_segmentation" 
-                                                14 50 33 16 0.0001 "ranking" 
+                                                14 50 33 16 0.001 "ranking" 
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('data_dir', type=str, default="./dataset/")
@@ -143,7 +143,7 @@ if __name__ == '__main__':
     parser.add_argument('train_size', type=int, default=50)
     parser.add_argument('val_size', type=int, default=33)
     parser.add_argument('crop_size', type=int, default=16)
-    parser.add_argument('learning_rate', type=float, default=0.0001)
+    parser.add_argument('learning_rate', type=float, default=0.001)
     parser.add_argument('pretrained', type=str, default="ranking")
     args = parser.parse_args()
 

@@ -38,11 +38,11 @@ import torch
 from torch.nn import CosineSimilarity
 import argparse
 from itertools import product, combinations
-
+import time
 
 def extract_triplets(batch1, batch2):
     """
-    Two different transforms of the same volumes
+    Two volumes, each with a pair of transforms on the volume
     :param batch1: (batchsize, channels, x, y, z)
     :param batch2: (batchsize, channels, x, y, z)
     same batch indices in the two batches are different transforms of the same volume
@@ -57,44 +57,44 @@ def extract_triplets(batch1, batch2):
         slice1_idx = np.random.choice(np.arange(0, int(dims[slice_dimension] / num_partitions)))
         slice2_idx = np.random.choice(np.arange(int(dims[slice_dimension] / num_partitions), dims[slice_dimension]))
         x1_slice1 = batch1[0, :, slice1_idx].reshape(dims[1], -1)  # channels x flattened features
-        x1_trans_slice1 = batch2[0, :, slice1_idx].reshape(dims[1], -1)
+        x1_trans_slice1 = batch1[1, :, slice1_idx].reshape(dims[1], -1)
         x1_slice2 = batch1[0, :, slice2_idx].reshape(dims[1], -1)
-        x1_trans_slice2 = batch2[0, :, slice2_idx].reshape(dims[1], -1)
-        x2_slice1 = batch1[1, :, slice1_idx].reshape(dims[1], -1)
+        x1_trans_slice2 = batch1[1, :, slice2_idx].reshape(dims[1], -1)
+        x2_slice1 = batch2[0, :, slice1_idx].reshape(dims[1], -1)
         x2_trans_slice1 = batch2[1, :, slice1_idx].reshape(dims[1], -1)
-        x2_slice2 = batch1[1, :, slice2_idx].reshape(dims[1], -1)
+        x2_slice2 = batch2[0, :, slice2_idx].reshape(dims[1], -1)
         x2_trans_slice2 = batch2[1, :, slice2_idx].reshape(dims[1], -1)
     if slice_dimension == 3:
         print("Slicing dimension", slice_dimension)
         slice1_idx = np.random.choice(np.arange(0, int(dims[slice_dimension] / num_partitions)))
         slice2_idx = np.random.choice(np.arange(int(dims[slice_dimension] / num_partitions), dims[slice_dimension]))
         x1_slice1 = batch1[0, :, :, slice1_idx].reshape(dims[1], -1)
-        x1_trans_slice1 = batch2[0, :, :, slice1_idx].reshape(dims[1], -1)
+        x1_trans_slice1 = batch1[1, :, :, slice1_idx].reshape(dims[1], -1)
         x1_slice2 = batch1[0, :, :, slice2_idx].reshape(dims[1], -1)
-        x1_trans_slice2 = batch2[0, :, :, slice2_idx].reshape(dims[1], -1)
-        x2_slice1 = batch1[1, :, :, slice1_idx].reshape(dims[1], -1)
+        x1_trans_slice2 = batch1[1, :, :, slice2_idx].reshape(dims[1], -1)
+        x2_slice1 = batch2[0, :, :, slice1_idx].reshape(dims[1], -1)
         x2_trans_slice1 = batch2[1, :, :, slice1_idx].reshape(dims[1], -1)
-        x2_slice2 = batch1[1, :, :, slice2_idx].reshape(dims[1], -1)
+        x2_slice2 = batch2[0, :, :, slice2_idx].reshape(dims[1], -1)
         x2_trans_slice2 = batch2[1, :, :, slice2_idx].reshape(dims[1], -1)
     if slice_dimension == 4:
         print("Slicing dimension", slice_dimension)
         slice1_idx = np.random.choice(np.arange(0, int(dims[slice_dimension] / num_partitions)))
         slice2_idx = np.random.choice(np.arange(int(dims[slice_dimension] / num_partitions), dims[slice_dimension]))
         x1_slice1 = batch1[0, :, :, :, slice1_idx].reshape(dims[1], -1)
-        x1_trans_slice1 = batch2[0, :, :, :, slice1_idx].reshape(dims[1], -1)
+        x1_trans_slice1 = batch1[1, :, :, :, slice1_idx].reshape(dims[1], -1)
         x1_slice2 = batch1[0, :, :, :, slice2_idx].reshape(dims[1], -1)
-        x1_trans_slice2 = batch2[0, :, :, :, slice2_idx].reshape(dims[1], -1)
-        x2_slice1 = batch1[1, :, :, :, slice1_idx].reshape(dims[1], -1)
+        x1_trans_slice2 = batch1[1, :, :, :, slice2_idx].reshape(dims[1], -1)
+        x2_slice1 = batch2[0, :, :, :, slice1_idx].reshape(dims[1], -1)
         x2_trans_slice1 = batch2[1, :, :, :, slice1_idx].reshape(dims[1], -1)
-        x2_slice2 = batch1[1, :, :, :, slice2_idx].reshape(dims[1], -1)
+        x2_slice2 = batch2[0, :, :, :, slice2_idx].reshape(dims[1], -1)
         x2_trans_slice2 = batch2[1, :, :, :, slice2_idx].reshape(dims[1], -1)
     print(x1_slice1.shape, x1_slice2.shape, x2_slice1.shape, x2_slice2.shape)
     reference = []
     similar = []
     dissimilar = []
-    # same slice different transforms (from SimCLR)
-    # different slices (from medical image segmentation)
-    # dont make same partitions across different volumes dissimilar
+    # same slice same volume different transforms are similar (from SimCLR)
+    # same slice different volumes and their transformations are similar (from medical image segmentation)
+    # different slices and their transformations are dissimilar
     for (ref_sim_pair, dissim) in product(combinations([x1_slice1, x1_trans_slice1, x2_slice1, x2_trans_slice1], 2),
                                       [x1_slice2, x1_trans_slice2, x2_slice2, x2_trans_slice2]):
         reference.append(ref_sim_pair[0])
@@ -111,6 +111,7 @@ def BTLoss(reference, similar, dissimilar, optimizer):
     """
     Negative log likelihood of Bradley-Terry Penalty, to be minimized. y = beta.*x
     """
+    start_time = time.time()
     cum_loss = 0
     for ref, sim, dissim in zip(reference, similar, dissimilar):
         similar_pred = cos(ref, sim) / temperature
@@ -122,13 +123,15 @@ def BTLoss(reference, similar, dissimilar, optimizer):
         cum_loss += loss.item()
     optimizer.step()
     optimizer.zero_grad()
-    return cum_loss
+    end_time = time.time()
+    return cum_loss, end_time - start_time
 
 def ContrastiveLoss(reference, similar, dissimilar, optimizer):
     """
     Contrastive learning of global and local features for
     medical image segmentation with limited annotations
     """
+    start_time = time.time()
     cum_loss = 0
     for ref, sim in zip(reference, similar):
         numerator = torch.exp(cos(ref, sim) / temperature)
@@ -140,17 +143,19 @@ def ContrastiveLoss(reference, similar, dissimilar, optimizer):
         cum_loss += loss.item()
     optimizer.step()
     optimizer.zero_grad()
-    return cum_loss
+    end_time = time.time()
+    return cum_loss, end_time - start_time
 
-def train(global_step, train_loader, update_arc="feat"):
+def train(global_step, train_loader, update_arc):
     model.train()
     epoch_ranking_loss = 0
+    epoch_time = 0
     epoch_iterator = tqdm(
-        train_loader, desc="Training (X / X Steps) (loss=X.X)", dynamic_ncols=True
+        train_loader, desc="Training (X / X Steps) (ranking loss=X.X) (loss time=X.X)", dynamic_ncols=True
     )
     # load 2 transforms of the same volume
     for step, batch in enumerate(epoch_iterator):
-        # batch is concatenation of two volumes with 2 transformations on each
+        # batch is concatenation of Two volumes, each with a pair of transforms on the volume
         print("Input batch shape", batch["image"].shape)
         step += 1
         # concat two different transforms
@@ -167,19 +172,21 @@ def train(global_step, train_loader, update_arc="feat"):
         reference, similar, dissimilar = extract_triplets(f1, f2)
         # loss and optimize
         if args.loss == "ranking":
-            ranking_loss = BTLoss(reference, similar, dissimilar, optimizer)
+            ranking_loss, loss_time = BTLoss(reference, similar, dissimilar, optimizer)
         else:
-            ranking_loss = ContrastiveLoss(reference, similar, dissimilar, optimizer)
+            ranking_loss, loss_time = ContrastiveLoss(reference, similar, dissimilar, optimizer)
         epoch_ranking_loss += ranking_loss
+        epoch_time += loss_time
         epoch_iterator.set_description(
-            "Training (%d / %d Steps) (ranking loss=%2.5f)" % (global_step, max_iterations, ranking_loss)
+            "Training (%d / %d Steps) (ranking loss=%2.5f) (loss time=%2.5f)" %
+            (global_step, max_iterations, ranking_loss, loss_time)
         )
 
-        if (
-            global_step % eval_num == 0 and global_step != 0
-        ) or global_step == max_iterations:
+        if (global_step % eval_num == 0 and global_step != 0) or global_step == max_iterations:
             epoch_ranking_loss /= step
+            epoch_time /= step
             epoch_ranking_loss_values.append(epoch_ranking_loss)
+            epoch_time_values.append(epoch_time)
             torch.save(
                 model.state_dict(), os.path.join(root_dir, update_arc + "_best_metric_model.pth")
             )
@@ -192,7 +199,7 @@ def train(global_step, train_loader, update_arc="feat"):
 
 if __name__ == '__main__':
     """
-    python unetr_btcv_ranking_pretraining_3d.py "./dataset/" "./results" 14 50 16 0.0001 0.5 "ranking"
+    python unetr_btcv_ranking_pretraining_3d.py "./dataset/" "./results" 14 50 16 0.001 0.1 "ranking"
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('data_dir', type=str, default="./dataset/")
@@ -200,8 +207,8 @@ if __name__ == '__main__':
     parser.add_argument('n_classes', type=int, default=14)
     parser.add_argument('train_size', type=int, default=50)
     parser.add_argument('crop_size', type=int, default=16)
-    parser.add_argument('learning_rate', type=float, default=0.0001)
-    parser.add_argument('temperature', type=float, default=0.5)
+    parser.add_argument('learning_rate', type=float, default=0.001)
+    parser.add_argument('temperature', type=float, default=0.1)
     parser.add_argument('loss', type=str, default="ranking")
     args = parser.parse_args()
 
@@ -319,6 +326,7 @@ if __name__ == '__main__':
     # update features
     global_step = 0
     epoch_ranking_loss_values = []
+    epoch_time_values = []
     update_arc = "feat"
     while global_step < max_iterations:
         global_step = train(global_step, train_loader, update_arc)
@@ -327,15 +335,17 @@ if __name__ == '__main__':
     model.load_state_dict(torch.load(os.path.join(root_dir, update_arc + "_best_metric_model.pth")))
     plt.figure("train", (12, 6))
     plt.title("Iteration Average Loss")
-    x = [eval_num * (i + 1) for i in range(len(epoch_ranking_loss_values))]
+    x = [np.sum(epoch_time_values[:i+1]) for i in range(len(epoch_time_values))]
     y = epoch_ranking_loss_values
-    plt.xlabel("Iteration")
+    plt.xlabel("Time(s)")
     plt.plot(x, y)
     plt.savefig(os.path.join(root_dir, update_arc + "_train.png"))
+    plt.close()
 
     # update reconstructions
     global_step = 0
     epoch_ranking_loss_values = []
+    epoch_time_values = []
     update_arc = "recon"
     while global_step < max_iterations:
         global_step = train(global_step, train_loader, update_arc)
@@ -344,8 +354,8 @@ if __name__ == '__main__':
     model.load_state_dict(torch.load(os.path.join(root_dir, update_arc + "_best_metric_model.pth")))
     plt.figure("train", (12, 6))
     plt.title("Iteration Average Loss")
-    x = [eval_num * (i + 1) for i in range(len(epoch_ranking_loss_values))]
+    x = [np.sum(epoch_time_values[:i+1]) for i in range(len(epoch_time_values))]
     y = epoch_ranking_loss_values
-    plt.xlabel("Iteration")
+    plt.xlabel("Time(s)")
     plt.plot(x, y)
     plt.savefig(os.path.join(root_dir, update_arc + "_train.png"))
