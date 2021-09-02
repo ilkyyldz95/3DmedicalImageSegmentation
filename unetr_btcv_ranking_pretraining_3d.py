@@ -223,7 +223,7 @@ def ContrastiveLoss(reference, similar, dissimilar, optimizer):
     end_time = time.time()
     return cum_loss, end_time - start_time
 
-def train(global_step, train_loader, update_arc):
+def train(global_step, train_loader, update_arc, model_save_prefix):
     model.train()
     epoch_ranking_loss = 0
     epoch_time = 0
@@ -269,7 +269,7 @@ def train(global_step, train_loader, update_arc):
             epoch_ranking_loss_values.append(epoch_ranking_loss)
             epoch_time_values.append(epoch_time)
             torch.save(
-                model.state_dict(), os.path.join(root_dir, update_arc + "_best_metric_model.pth")
+                model.state_dict(), os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")
             )
             print(
                 "Model Was Saved At Global Step {} for {}!".format(global_step, update_arc)
@@ -401,7 +401,7 @@ if __name__ == '__main__':
     cos = CosineSimilarity(dim=-1, eps=1e-6)
 
     # Training
-    max_iterations = 15000
+    max_iterations = 10000
     eval_num = 500
 
     # update features
@@ -409,18 +409,19 @@ if __name__ == '__main__':
     epoch_ranking_loss_values = []
     epoch_time_values = []
     update_arc = "feat"
+    model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
     while global_step < max_iterations:
-        global_step = train(global_step, train_loader, update_arc)
+        global_step = train(global_step, train_loader, update_arc, model_save_prefix)
 
     # Evaluation
-    model.load_state_dict(torch.load(os.path.join(root_dir, update_arc + "_best_metric_model.pth")))
+    model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
     plt.figure("train", (12, 6))
     plt.title("Iteration Average Loss")
     x = [np.sum(epoch_time_values[:i+1]) for i in range(len(epoch_time_values))]
     y = epoch_ranking_loss_values
     plt.xlabel("Time(s)")
     plt.plot(x, y)
-    plt.savefig(os.path.join(root_dir, update_arc + "_train.png"))
+    plt.savefig(os.path.join(root_dir, model_save_prefix + "_train.png"))
     plt.close()
 
     # update reconstructions, freezing encoder
@@ -428,15 +429,16 @@ if __name__ == '__main__':
     epoch_ranking_loss_values = []
     epoch_time_values = []
     update_arc = "recon"
+    model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
     while global_step < max_iterations:
-        global_step = train(global_step, train_loader, update_arc)
+        global_step = train(global_step, train_loader, update_arc, model_save_prefix)
 
     # Evaluation
-    model.load_state_dict(torch.load(os.path.join(root_dir, update_arc + "_best_metric_model.pth")))
+    model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
     plt.figure("train", (12, 6))
     plt.title("Iteration Average Loss")
     x = [np.sum(epoch_time_values[:i+1]) for i in range(len(epoch_time_values))]
     y = epoch_ranking_loss_values
     plt.xlabel("Time(s)")
     plt.plot(x, y)
-    plt.savefig(os.path.join(root_dir, update_arc + "_train.png"))
+    plt.savefig(os.path.join(root_dir, model_save_prefix + "_train.png"))

@@ -133,7 +133,7 @@ def train(global_step, train_loader, dice_val_best, global_step_best):
 
 if __name__ == '__main__':
     """
-    python unetr_btcv_segmentation_3d.py "./dataset/" "./results_segmentation" 14 50 33 16 0.001 "ranking" 
+    python unetr_btcv_segmentation_3d.py "./dataset/" "./results_segmentation" 14 50 33 16 0.001 "./results_ranking/recon_lr_0.0001_temp_0.1_best_metric_model.pth" 
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('data_dir', type=str, default="./dataset/")
@@ -143,7 +143,7 @@ if __name__ == '__main__':
     parser.add_argument('val_size', type=int, default=33)
     parser.add_argument('crop_size', type=int, default=16)
     parser.add_argument('learning_rate', type=float, default=0.001)
-    parser.add_argument('pretrained', type=str, default="ranking")
+    parser.add_argument('pretrained', type=str, default="./results_ranking/recon_lr_0.0001_temp_0.1_best_metric_model.pth")
     args = parser.parse_args()
 
     # Dataset parameters
@@ -154,8 +154,10 @@ if __name__ == '__main__':
 
     # Tuned parameters based on dataset
     root_dir = args.root_dir
-    if args.pretrained != "":
-        root_dir += "_pretrained_" + args.pretrained
+    if "ranking" in args.pretrained:
+        root_dir += "_pretrained_ranking"
+    elif "contrast" in args.pretrained:
+        root_dir += "_pretrained_contrast"
     learning_rate = args.learning_rate
     crop_size = args.crop_size  # bottleneck features are 2 dimensional
 
@@ -288,9 +290,8 @@ if __name__ == '__main__':
 
     # Load pretrained model if exists
     if args.pretrained != "":
-        pretrained_path = "./results_" + args.pretrained + "/recon_best_metric_model.pth"
-        print("Loading pretrained model", pretrained_path)
-        model.load_state_dict(torch.load(pretrained_path))
+        print("Loading pretrained model", args.pretrained)
+        model.load_state_dict(torch.load(args.pretrained))
 
     # Loss and optimizer
     loss_function = DiceCELoss(to_onehot_y=True, softmax=True)
