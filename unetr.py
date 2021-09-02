@@ -10,7 +10,7 @@
 # limitations under the License.
 
 from typing import Tuple, Union
-
+import torch
 import torch.nn as nn
 
 from monai.networks.blocks.dynunet_block import UnetOutBlock
@@ -179,15 +179,26 @@ class UNETR(nn.Module):
         x = x.permute(0, 4, 1, 2, 3).contiguous()
         return x
 
-    def forward(self, x_in):
-        x, hidden_states_out = self.vit(x_in)
-        enc1 = self.encoder1(x_in)
-        x2 = hidden_states_out[3]
-        enc2 = self.encoder2(self.proj_feat(x2, self.hidden_size, self.feat_size))
-        x3 = hidden_states_out[6]
-        enc3 = self.encoder3(self.proj_feat(x3, self.hidden_size, self.feat_size))
-        x4 = hidden_states_out[9]
-        enc4 = self.encoder4(self.proj_feat(x4, self.hidden_size, self.feat_size))
+    def forward(self, x_in, freeze_encoder=False):
+        if freeze_encoder:
+            with torch.no_grad():
+                x, hidden_states_out = self.vit(x_in)
+                enc1 = self.encoder1(x_in)
+                x2 = hidden_states_out[3]
+                enc2 = self.encoder2(self.proj_feat(x2, self.hidden_size, self.feat_size))
+                x3 = hidden_states_out[6]
+                enc3 = self.encoder3(self.proj_feat(x3, self.hidden_size, self.feat_size))
+                x4 = hidden_states_out[9]
+                enc4 = self.encoder4(self.proj_feat(x4, self.hidden_size, self.feat_size))
+        else:
+            x, hidden_states_out = self.vit(x_in)
+            enc1 = self.encoder1(x_in)
+            x2 = hidden_states_out[3]
+            enc2 = self.encoder2(self.proj_feat(x2, self.hidden_size, self.feat_size))
+            x3 = hidden_states_out[6]
+            enc3 = self.encoder3(self.proj_feat(x3, self.hidden_size, self.feat_size))
+            x4 = hidden_states_out[9]
+            enc4 = self.encoder4(self.proj_feat(x4, self.hidden_size, self.feat_size))
         dec4 = self.proj_feat(x, self.hidden_size, self.feat_size)
         dec3 = self.decoder5(dec4, enc4)
         dec2 = self.decoder4(dec3, enc3)

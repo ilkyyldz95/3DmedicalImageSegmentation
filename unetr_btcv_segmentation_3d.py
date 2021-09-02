@@ -133,8 +133,7 @@ def train(global_step, train_loader, dice_val_best, global_step_best):
 
 if __name__ == '__main__':
     """
-    python unetr_btcv_ranking_pretraining_3d.py "./dataset/" "./results_segmentation" 
-                                                14 50 33 16 0.001 "ranking" 
+    python unetr_btcv_segmentation_3d.py "./dataset/" "./results_segmentation" 14 50 33 16 0.001 "ranking" 
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('data_dir', type=str, default="./dataset/")
@@ -156,7 +155,7 @@ if __name__ == '__main__':
     # Tuned parameters based on dataset
     root_dir = args.root_dir
     if args.pretrained != "":
-        args.root_dir += "_pretrained_" + args.pretrained
+        root_dir += "_pretrained_" + args.pretrained
     learning_rate = args.learning_rate
     crop_size = args.crop_size  # bottleneck features are 2 dimensional
 
@@ -289,8 +288,9 @@ if __name__ == '__main__':
 
     # Load pretrained model if exists
     if args.pretrained != "":
-        print("Loading pretrained model", args.pretrained)
-        model.load_state_dict(torch.load("./results_" + args.pretrained + "/recon_best_metric_model.pth"))
+        pretrained_path = "./results_" + args.pretrained + "/recon_best_metric_model.pth"
+        print("Loading pretrained model", pretrained_path)
+        model.load_state_dict(torch.load(pretrained_path))
 
     # Loss and optimizer
     loss_function = DiceCELoss(to_onehot_y=True, softmax=True)
@@ -312,6 +312,8 @@ if __name__ == '__main__':
         global_step, dice_val_best, global_step_best = train(
             global_step, train_loader, dice_val_best, global_step_best
         )
+    np.save(os.path.join(root_dir, "loss"), epoch_loss_values)
+    np.save(os.path.join(root_dir, "metric"), metric_values)
 
     # Evaluation
     model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))

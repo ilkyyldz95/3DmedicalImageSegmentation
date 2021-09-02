@@ -40,6 +40,83 @@ import argparse
 from itertools import product, combinations
 import time
 
+def extract_triplets_more_partitions(batch1, batch2):
+    """
+    Two volumes, each with a pair of transforms on the volume
+    :param batch1: (batchsize, channels, x, y, z)
+    :param batch2: (batchsize, channels, x, y, z)
+    same batch indices in the two batches are different transforms of the same volume
+    assuming batch_size = 2
+    """
+    print("Shapes of loss batch pair", batch1.shape, batch2.shape)
+    dims = batch1.shape
+    # choose slicing dimension
+    slice_dimension = np.random.choice([2, 3, 4])
+    slices_list = []
+    if slice_dimension == 2:
+        print("Slicing dimension", slice_dimension)
+        partition_size = int(dims[slice_dimension] / num_partitions)
+        # for each sampled volume, we sample one image per partition
+        init_idx = np.random.choice(np.arange(0, partition_size))
+        slice_idx_list = [init_idx + partition_idx * partition_size for partition_idx in range(num_partitions)]
+        print("Slice indices:", slice_idx_list)
+        for slice_idx in slice_idx_list:
+            # Two volumes, each with a pair of transforms on the volume
+            x1_slice = batch1[0, :, slice_idx].reshape(dims[1], -1)  # channels x flattened features
+            x1_trans_slice = batch1[1, :, slice_idx].reshape(dims[1], -1)
+            x2_slice = batch2[0, :, slice_idx].reshape(dims[1], -1)
+            x2_trans_slice = batch2[1, :, slice_idx].reshape(dims[1], -1)
+            slices_list.append([x1_slice, x1_trans_slice, x2_slice, x2_trans_slice])
+            print(x1_slice.shape, x1_trans_slice.shape, x2_slice.shape, x2_trans_slice.shape)
+    if slice_dimension == 3:
+        print("Slicing dimension", slice_dimension)
+        partition_size = int(dims[slice_dimension] / num_partitions)
+        # for each sampled volume, we sample one image per partition
+        init_idx = np.random.choice(np.arange(0, partition_size))
+        slice_idx_list = [init_idx + partition_idx * partition_size for partition_idx in range(num_partitions)]
+        print("Slice indices:", slice_idx_list)
+        for slice_idx in slice_idx_list:
+            # Two volumes, each with a pair of transforms on the volume
+            x1_slice = batch1[0, :, :, slice_idx].reshape(dims[1], -1)  # channels x flattened features
+            x1_trans_slice = batch1[1, :, :, slice_idx].reshape(dims[1], -1)
+            x2_slice = batch2[0, :, :, slice_idx].reshape(dims[1], -1)
+            x2_trans_slice = batch2[1, :, :, slice_idx].reshape(dims[1], -1)
+            slices_list.append([x1_slice, x1_trans_slice, x2_slice, x2_trans_slice])
+            print(x1_slice.shape, x1_trans_slice.shape, x2_slice.shape, x2_trans_slice.shape)
+    if slice_dimension == 4:
+        print("Slicing dimension", slice_dimension)
+        partition_size = int(dims[slice_dimension] / num_partitions)
+        # for each sampled volume, we sample one image per partition
+        init_idx = np.random.choice(np.arange(0, partition_size))
+        slice_idx_list = [init_idx + partition_idx * partition_size for partition_idx in range(num_partitions)]
+        print("Slice indices:", slice_idx_list)
+        for slice_idx in slice_idx_list:
+            # Two volumes, each with a pair of transforms on the volume
+            x1_slice = batch1[0, :, :, :, slice_idx].reshape(dims[1], -1)  # channels x flattened features
+            x1_trans_slice = batch1[1, :, :, :, slice_idx].reshape(dims[1], -1)
+            x2_slice = batch2[0, :, :, :, slice_idx].reshape(dims[1], -1)
+            x2_trans_slice = batch2[1, :, :, :, slice_idx].reshape(dims[1], -1)
+            slices_list.append([x1_slice, x1_trans_slice, x2_slice, x2_trans_slice])
+            print(x1_slice.shape, x1_trans_slice.shape, x2_slice.shape, x2_trans_slice.shape)
+    reference = []
+    similar = []
+    dissimilar = []
+    # for each partition
+    for partition_idx in range(num_partitions):
+        # same slice same volume different transforms are similar (from SimCLR)
+        # same slice different volumes and their transformations are similar (from medical image segmentation)
+        # different slices and their transformations are dissimilar
+        current_partition = slices_list[partition_idx]
+        other_partitions = []
+        for other_partition_idx in range(num_partitions):
+            if not (other_partition_idx == partition_idx):
+                other_partitions.extend(slices_list[other_partition_idx])
+        for (ref_sim_pair, dissim) in product(combinations(current_partition, 2), other_partitions):
+            reference.append(ref_sim_pair[0])
+            similar.append(ref_sim_pair[1])
+            dissimilar.append(dissim)
+    return reference, similar, dissimilar
+
 def extract_triplets(batch1, batch2):
     """
     Two volumes, each with a pair of transforms on the volume
@@ -54,8 +131,8 @@ def extract_triplets(batch1, batch2):
     slice_dimension = np.random.choice([2, 3, 4])
     if slice_dimension == 2:
         print("Slicing dimension", slice_dimension)
-        slice1_idx = np.random.choice(np.arange(0, int(dims[slice_dimension] / num_partitions)))
-        slice2_idx = np.random.choice(np.arange(int(dims[slice_dimension] / num_partitions), dims[slice_dimension]))
+        slice1_idx = np.random.choice(np.arange(0, int(dims[slice_dimension] / 2)))
+        slice2_idx = np.random.choice(np.arange(int(dims[slice_dimension] / 2), dims[slice_dimension]))
         x1_slice1 = batch1[0, :, slice1_idx].reshape(dims[1], -1)  # channels x flattened features
         x1_trans_slice1 = batch1[1, :, slice1_idx].reshape(dims[1], -1)
         x1_slice2 = batch1[0, :, slice2_idx].reshape(dims[1], -1)
@@ -66,8 +143,8 @@ def extract_triplets(batch1, batch2):
         x2_trans_slice2 = batch2[1, :, slice2_idx].reshape(dims[1], -1)
     if slice_dimension == 3:
         print("Slicing dimension", slice_dimension)
-        slice1_idx = np.random.choice(np.arange(0, int(dims[slice_dimension] / num_partitions)))
-        slice2_idx = np.random.choice(np.arange(int(dims[slice_dimension] / num_partitions), dims[slice_dimension]))
+        slice1_idx = np.random.choice(np.arange(0, int(dims[slice_dimension] / 2)))
+        slice2_idx = np.random.choice(np.arange(int(dims[slice_dimension] / 2), dims[slice_dimension]))
         x1_slice1 = batch1[0, :, :, slice1_idx].reshape(dims[1], -1)
         x1_trans_slice1 = batch1[1, :, :, slice1_idx].reshape(dims[1], -1)
         x1_slice2 = batch1[0, :, :, slice2_idx].reshape(dims[1], -1)
@@ -78,8 +155,8 @@ def extract_triplets(batch1, batch2):
         x2_trans_slice2 = batch2[1, :, :, slice2_idx].reshape(dims[1], -1)
     if slice_dimension == 4:
         print("Slicing dimension", slice_dimension)
-        slice1_idx = np.random.choice(np.arange(0, int(dims[slice_dimension] / num_partitions)))
-        slice2_idx = np.random.choice(np.arange(int(dims[slice_dimension] / num_partitions), dims[slice_dimension]))
+        slice1_idx = np.random.choice(np.arange(0, int(dims[slice_dimension] / 2)))
+        slice2_idx = np.random.choice(np.arange(int(dims[slice_dimension] / 2), dims[slice_dimension]))
         x1_slice1 = batch1[0, :, :, :, slice1_idx].reshape(dims[1], -1)
         x1_trans_slice1 = batch1[1, :, :, :, slice1_idx].reshape(dims[1], -1)
         x1_slice2 = batch1[0, :, :, :, slice2_idx].reshape(dims[1], -1)
@@ -161,15 +238,19 @@ def train(global_step, train_loader, update_arc):
         # concat two different transforms
         x = batch["image"].cuda()
         # fw pass
-        latent_feat, logit_map = model(x)
         if update_arc == "feat":
+            latent_feat, logit_map = model(x)
             input = latent_feat.clone()
         else:
+            latent_feat, logit_map = model(x, freeze_encoder=True)
             input = logit_map.clone()
         # split features
         f1, f2 = torch.split(input, [batch_size, batch_size], dim=0)
         # create triplets
-        reference, similar, dissimilar = extract_triplets(f1, f2)
+        if update_arc == "feat":
+            reference, similar, dissimilar = extract_triplets(f1, f2)
+        else:
+            reference, similar, dissimilar = extract_triplets_more_partitions(f1, f2)
         # loss and optimize
         if args.loss == "ranking":
             ranking_loss, loss_time = BTLoss(reference, similar, dissimilar, optimizer)
@@ -224,7 +305,7 @@ if __name__ == '__main__':
     crop_size = args.crop_size  # bottleneck features are 2 dimensional
 
     # fixed for now
-    num_partitions = 2
+    num_partitions = 4
     batch_size = 2
 
     if not os.path.isdir(root_dir):
@@ -342,7 +423,7 @@ if __name__ == '__main__':
     plt.savefig(os.path.join(root_dir, update_arc + "_train.png"))
     plt.close()
 
-    # update reconstructions
+    # update reconstructions, freezing encoder
     global_step = 0
     epoch_ranking_loss_values = []
     epoch_time_values = []
