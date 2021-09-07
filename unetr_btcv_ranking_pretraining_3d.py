@@ -271,8 +271,8 @@ def train(global_step, train_loader, update_arc, model_save_prefix):
             )
 
             if (global_step % eval_num == 0 and global_step != 0) or global_step == max_iterations:
-                epoch_ranking_loss /= step
-                epoch_time /= step
+                #epoch_ranking_loss /= step
+                #epoch_time /= step
                 epoch_ranking_loss_values.append(epoch_ranking_loss)
                 epoch_time_values.append(epoch_time)
                 torch.save(
@@ -408,17 +408,28 @@ if __name__ == '__main__':
     cos = CosineSimilarity(dim=-1, eps=1e-6)
 
     # Training
-    max_iterations = 5000
-    eval_num = 500
+    max_iterations = 10000
+    eval_num = 50
+    rtol = 1e-2
 
     # update features
+    params_conv = False
     global_step = 0
     epoch_ranking_loss_values = []
     epoch_time_values = []
     update_arc = "feat"
     model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
-    while global_step < max_iterations:
+    while not params_conv:
         global_step = train(global_step, train_loader, update_arc, model_save_prefix)
+        if global_step <= eval_num:
+            avg_obj = np.mean(epoch_ranking_loss_values[:-1])
+        else:
+            avg_obj = np.mean(epoch_ranking_loss_values[-eval_num - 1:-1])
+        params_conv = np.abs(avg_obj - epoch_ranking_loss_values[-1]) < rtol * avg_obj or \
+                      global_step >= max_iterations  # check conv.
+    print(
+        "Training Converged At Global Step {} for {}!".format(global_step, update_arc)
+    )
 
     # Evaluation
     model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
@@ -432,13 +443,23 @@ if __name__ == '__main__':
     plt.close()
 
     # update reconstructions, freezing encoder
+    params_conv = False
     global_step = 0
     epoch_ranking_loss_values = []
     epoch_time_values = []
     update_arc = "recon"
     model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
-    while global_step < max_iterations:
+    while not params_conv:
         global_step = train(global_step, train_loader, update_arc, model_save_prefix)
+        if global_step <= eval_num:
+            avg_obj = np.mean(epoch_ranking_loss_values[:-1])
+        else:
+            avg_obj = np.mean(epoch_ranking_loss_values[-eval_num - 1:-1])
+        params_conv = np.abs(avg_obj - epoch_ranking_loss_values[-1]) < rtol * avg_obj or \
+                      global_step >= max_iterations  # check conv.
+    print(
+        "Training Converged At Global Step {} for {}!".format(global_step, update_arc)
+    )
 
     # Evaluation
     model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
