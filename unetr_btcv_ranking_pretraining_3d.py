@@ -37,10 +37,17 @@ import torch
 #torch.autograd.set_detect_anomaly(True)
 from torch.nn import CosineSimilarity
 import argparse
-from itertools import product, combinations
+from itertools import product, permutations
 import time
 
-def extract_triplets_more_partitions(batch1, batch2):
+"""
+Differences from standard global contrastive loss:
+1) Learning without a FC projection layer
+2) Using only global similarity of corresponding slice partitions
+3) Repeating global similarity for each of the 3 axes
+"""
+
+def extract_triplets_more_partitions(batch1, batch2, slice_dimension=2):
     """
     Two volumes, each with a pair of transforms on the volume
     :param batch1: (batchsize, channels, x, y, z)
@@ -51,7 +58,6 @@ def extract_triplets_more_partitions(batch1, batch2):
     print("Shapes of loss batch pair", batch1.shape, batch2.shape)
     dims = batch1.shape
     # choose slicing dimension
-    slice_dimension = np.random.choice([2, 3, 4])
     slices_list = []
     if slice_dimension == 2:
         print("Slicing dimension", slice_dimension)
@@ -111,13 +117,13 @@ def extract_triplets_more_partitions(batch1, batch2):
         for other_partition_idx in range(num_partitions):
             if not (other_partition_idx == partition_idx):
                 other_partitions.extend(slices_list[other_partition_idx])
-        for (ref_sim_pair, dissim) in product(combinations(current_partition, 2), other_partitions):
+        for (ref_sim_pair, dissim) in product(permutations(current_partition, 2), other_partitions):
             reference.append(ref_sim_pair[0])
             similar.append(ref_sim_pair[1])
             dissimilar.append(dissim)
     return reference, similar, dissimilar
 
-def extract_triplets(batch1, batch2):
+def extract_triplets(batch1, batch2, slice_dimension=2):
     """
     Two volumes, each with a pair of transforms on the volume
     :param batch1: (batchsize, channels, x, y, z)
@@ -128,7 +134,6 @@ def extract_triplets(batch1, batch2):
     print("Shapes of loss batch pair", batch1.shape, batch2.shape)
     dims = batch1.shape
     # choose slicing dimension
-    slice_dimension = np.random.choice([2, 3, 4])
     if slice_dimension == 2:
         print("Slicing dimension", slice_dimension)
         slice1_idx = np.random.choice(np.arange(0, int(dims[slice_dimension] / 2)))
@@ -172,12 +177,13 @@ def extract_triplets(batch1, batch2):
     # same slice same volume different transforms are similar (from SimCLR)
     # same slice different volumes and their transformations are similar (from medical image segmentation)
     # different slices and their transformations are dissimilar
-    for (ref_sim_pair, dissim) in product(combinations([x1_slice1, x1_trans_slice1, x2_slice1, x2_trans_slice1], 2),
+    # add both directions of ranking 1->2 2->1
+    for (ref_sim_pair, dissim) in product(permutations([x1_slice1, x1_trans_slice1, x2_slice1, x2_trans_slice1], 2),
                                       [x1_slice2, x1_trans_slice2, x2_slice2, x2_trans_slice2]):
         reference.append(ref_sim_pair[0])
         similar.append(ref_sim_pair[1])
         dissimilar.append(dissim)
-    for (ref_sim_pair, dissim) in product(combinations([x1_slice2, x1_trans_slice2, x2_slice2, x2_trans_slice2], 2),
+    for (ref_sim_pair, dissim) in product(permutations([x1_slice2, x1_trans_slice2, x2_slice2, x2_trans_slice2], 2),
                                       [x1_slice1, x1_trans_slice1, x2_slice1, x2_trans_slice1]):
         reference.append(ref_sim_pair[0])
         similar.append(ref_sim_pair[1])
@@ -187,19 +193,19 @@ def extract_triplets(batch1, batch2):
 def BTLoss(reference, similar, dissimilar, optimizer):
     """
     Negative log likelihood of Bradley-Terry Penalty, to be minimized. y = beta.*x
+    Focus on global contrastive
     """
     start_time = time.time()
-    cum_loss = 0
+    loss = 0
     for ref, sim, dissim in zip(reference, similar, dissimilar):
         similar_pred = cos(ref, sim) / temperature
         dissimilar_pred = cos(ref, dissim) / temperature
         comp_pred = similar_pred - dissimilar_pred  # si-sj
-        #print("Comparison dimension", comp_pred.shape)
-        loss = torch.mean(torch.log(1 + torch.exp((comp_pred))))
-        loss.backward(retain_graph=True)
-        cum_loss += loss.item()
+        loss += torch.mean(torch.log(1 + torch.exp((comp_pred))))
+    loss.backward()
     optimizer.step()
     optimizer.zero_grad()
+    cum_loss = loss.item()
     end_time = time.time()
     return cum_loss, end_time - start_time
 
@@ -207,80 +213,81 @@ def ContrastiveLoss(reference, similar, dissimilar, optimizer):
     """
     Contrastive learning of global and local features for
     medical image segmentation with limited annotations
+    Focus on global contrastive
     """
     start_time = time.time()
-    cum_loss = 0
+    loss = 0
     for ref, sim in zip(reference, similar):
         numerator = torch.exp(cos(ref, sim) / temperature)
-        denominator = numerator.clone()
-        for dissim in dissimilar:
-            denominator += torch.exp(cos(ref, dissim) / temperature)
-        loss = - torch.mean(torch.log(numerator / denominator))
-        loss.backward(retain_graph=True)
-        cum_loss += loss.item()
+        denominator_list = [torch.exp(cos(ref, dissim) / temperature) for dissim in dissimilar]
+        denominator_list.append(numerator)
+        denominator = torch.stack(denominator_list, dim=0).sum(dim=0)
+        loss += - torch.mean(torch.log(numerator / denominator))
+    loss.backward()
     optimizer.step()
     optimizer.zero_grad()
+    cum_loss = loss.item()
     end_time = time.time()
     return cum_loss, end_time - start_time
 
 def train(global_step, train_loader, update_arc, model_save_prefix):
     model.train()
-    epoch_ranking_loss = 0
-    epoch_time = 0
-    epoch_iterator = tqdm(
-        train_loader, desc="Training (X / X Steps) (ranking loss=X.X) (loss time=X.X)", dynamic_ncols=True
-    )
-    # load 2 transforms of the same volume
-    for step, batch in enumerate(epoch_iterator):
-        # batch is concatenation of Two volumes, each with a pair of transforms on the volume
-        print("Input batch shape", batch["image"].shape)
-        step += 1
-        # concat two different transforms
-        x = batch["image"].cuda()
-        # fw pass
-        if update_arc == "feat":
-            latent_feat, logit_map = model(x)
-            input = latent_feat.clone()
-        else:
-            latent_feat, logit_map = model(x, freeze_encoder=True)
-            input = logit_map.clone()
-        # split features
-        f1, f2 = torch.split(input, [batch_size, batch_size], dim=0)
-        # create triplets
-        if update_arc == "feat":
-            reference, similar, dissimilar = extract_triplets(f1, f2)
-        else:
-            reference, similar, dissimilar = extract_triplets_more_partitions(f1, f2)
-        # loss and optimize
-        if args.loss == "ranking":
-            ranking_loss, loss_time = BTLoss(reference, similar, dissimilar, optimizer)
-        else:
-            ranking_loss, loss_time = ContrastiveLoss(reference, similar, dissimilar, optimizer)
-        epoch_ranking_loss += ranking_loss
-        epoch_time += loss_time
-        epoch_iterator.set_description(
-            "Training (%d / %d Steps) (ranking loss=%2.5f) (loss time=%2.5f)" %
-            (global_step, max_iterations, ranking_loss, loss_time)
+    # repeat global similarity learning for each of the 3 dimensions
+    for slice_dimension in [2, 3, 4]:
+        epoch_ranking_loss = 0
+        epoch_time = 0
+        epoch_iterator = tqdm(
+            train_loader, desc="Training (X / X Steps) (ranking loss=X.X) (loss time=X.X)", dynamic_ncols=True
         )
+        # load 2 transforms of the same volume
+        for step, batch in enumerate(epoch_iterator):
+            # batch is concatenation of Two volumes, each with a pair of transforms on the volume
+            print("Input batch shape", batch["image"].shape)
+            step += 1
+            # concat two different transforms
+            x = batch["image"].cuda()
+            # fw pass
+            if update_arc == "feat":
+                input, _ = model(x)  # latent features are the input
+            else:
+                _, input = model(x, freeze_encoder=True)  # decoder output is the input
+            # split features into two different volumes
+            f1, f2 = torch.split(input, [batch_size, batch_size], dim=0)
+            # create triplets
+            if update_arc == "feat":
+                reference, similar, dissimilar = extract_triplets(f1, f2, slice_dimension)
+            else:
+                reference, similar, dissimilar = extract_triplets_more_partitions(f1, f2, slice_dimension)
+            # loss and optimize
+            if args.loss == "ranking":
+                ranking_loss, loss_time = BTLoss(reference, similar, dissimilar, optimizer)
+            else:
+                ranking_loss, loss_time = ContrastiveLoss(reference, similar, dissimilar, optimizer)
+            epoch_ranking_loss += ranking_loss
+            epoch_time += loss_time
+            epoch_iterator.set_description(
+                "Training (%d / %d Steps) (ranking loss=%2.5f) (loss time=%2.5f)" %
+                (global_step, max_iterations, ranking_loss, loss_time)
+            )
 
-        if (global_step % eval_num == 0 and global_step != 0) or global_step == max_iterations:
-            epoch_ranking_loss /= step
-            epoch_time /= step
-            epoch_ranking_loss_values.append(epoch_ranking_loss)
-            epoch_time_values.append(epoch_time)
-            torch.save(
-                model.state_dict(), os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")
-            )
-            print(
-                "Model Was Saved At Global Step {} for {}!".format(global_step, update_arc)
-            )
-        global_step += 1
+            if (global_step % eval_num == 0 and global_step != 0) or global_step == max_iterations:
+                epoch_ranking_loss /= step
+                epoch_time /= step
+                epoch_ranking_loss_values.append(epoch_ranking_loss)
+                epoch_time_values.append(epoch_time)
+                torch.save(
+                    model.state_dict(), os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")
+                )
+                print(
+                    "Model Was Saved At Global Step {} for {}!".format(global_step, update_arc)
+                )
+            global_step += 1
     return global_step
 
 
 if __name__ == '__main__':
     """
-    python unetr_btcv_ranking_pretraining_3d.py "./dataset/" "./results" 14 50 16 0.001 0.1 "ranking"
+    python unetr_btcv_ranking_pretraining_3d.py "./dataset/" "./results" 14 50 16 0.0001 0.1 "ranking"
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('data_dir', type=str, default="./dataset/")
@@ -288,7 +295,7 @@ if __name__ == '__main__':
     parser.add_argument('n_classes', type=int, default=14)
     parser.add_argument('train_size', type=int, default=50)
     parser.add_argument('crop_size', type=int, default=16)
-    parser.add_argument('learning_rate', type=float, default=0.001)
+    parser.add_argument('learning_rate', type=float, default=0.0001)
     parser.add_argument('temperature', type=float, default=0.1)
     parser.add_argument('loss', type=str, default="ranking")
     args = parser.parse_args()
@@ -334,7 +341,7 @@ if __name__ == '__main__':
             RandSpatialCropSamplesd(
                 keys=["image", "label"],
                 roi_size=(crop_size, crop_size, crop_size), random_size=False,
-                num_samples=batch_size,  # a pair of transforms on each crop
+                num_samples=batch_size,  # a pair of transforms on each volume
             ),
             RandFlipd(
                 keys=["image", "label"],
@@ -401,7 +408,7 @@ if __name__ == '__main__':
     cos = CosineSimilarity(dim=-1, eps=1e-6)
 
     # Training
-    max_iterations = 10000
+    max_iterations = 5000
     eval_num = 500
 
     # update features
