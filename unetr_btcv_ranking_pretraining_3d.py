@@ -419,6 +419,13 @@ if __name__ == '__main__':
     epoch_time_values = []
     update_arc = "feat"
     model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
+    # checkpoint if exists
+    if os.path.exists(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")):
+        global_step = 0
+        print(
+            "Loading Model Saved At Global Step {} for {}!".format(global_step, update_arc)
+        )
+        model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
     while not params_conv:
         global_step = train(global_step, train_loader, update_arc, model_save_prefix)
         if global_step <= eval_num:
@@ -449,6 +456,13 @@ if __name__ == '__main__':
     epoch_time_values = []
     update_arc = "recon"
     model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
+    # checkpoint if exists
+    if os.path.exists(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")):
+        global_step = 0
+        print(
+            "Loading Model Saved At Global Step {} for {}!".format(global_step, update_arc)
+        )
+        model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
     while not params_conv:
         global_step = train(global_step, train_loader, update_arc, model_save_prefix)
         if global_step <= eval_num:
