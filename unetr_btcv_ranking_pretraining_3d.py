@@ -201,7 +201,7 @@ def BTLoss(reference, similar, dissimilar, optimizer):
         similar_pred = cos(ref, sim) / temperature
         dissimilar_pred = cos(ref, dissim) / temperature
         comp_pred = similar_pred - dissimilar_pred  # si-sj
-        loss += torch.mean(torch.log(1 + torch.exp((comp_pred))))
+        loss += torch.mean(torch.log(1 + torch.exp((-comp_pred))))
     loss.backward()
     optimizer.step()
     optimizer.zero_grad()
