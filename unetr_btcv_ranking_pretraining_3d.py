@@ -8,23 +8,31 @@ from tqdm import tqdm
 
 from monai.inferers import sliding_window_inference
 from monai.transforms import (
+    Activations,
     AsDiscrete,
     AddChanneld,
     Compose,
+    CropForegroundd,
+    EnsureChannelFirstd,
     LoadImaged,
+    MapTransform,
+    NormalizeIntensityd,
     Orientationd,
     RandFlipd,
+    RandSpatialCropSamplesd,
     RandShiftIntensityd,
+    RandScaleIntensityd,
     ScaleIntensityRanged,
     Spacingd,
     RandRotate90d,
     ToTensord,
-    RandSpatialCropSamplesd,
-    CropForegroundd,
+    EnsureType,
+    EnsureTyped,
 )
 
 from monai.config import print_config
 from unetr import UNETR
+from monai.apps import DecathlonDataset, CrossValidation
 
 from monai.data import (
     DataLoader,
@@ -46,6 +54,33 @@ Differences from standard global contrastive loss:
 2) Using only global similarity of corresponding slice partitions
 3) Repeating global similarity for each of the 3 axes
 """
+class ConvertToMultiChannelBasedOnBratsClassesd(MapTransform):
+    """
+    Convert labels to multi channels based on brats classes:
+    label 1 is the peritumoral edema
+    label 2 is the GD-enhancing tumor
+    label 3 is the necrotic and non-enhancing tumor core
+    The possible classes are TC (Tumor core), WT (Whole tumor)
+    and ET (Enhancing tumor).
+
+    """
+
+    def __call__(self, data):
+        d = dict(data)
+        for key in self.keys:
+            result = []
+            # merge label 2 and label 3 to construct TC
+            result.append(np.logical_or(d[key] == 2, d[key] == 3))
+            # merge labels 1, 2 and 3 to construct WT
+            result.append(
+                np.logical_or(
+                    np.logical_or(d[key] == 2, d[key] == 3), d[key] == 1
+                )
+            )
+            # label 2 is ET
+            result.append(d[key] == 2)
+            d[key] = np.stack(result, axis=0).astype(np.float32)
+        return d
 
 def extract_triplets_more_partitions(batch1, batch2, slice_dimension=2):
     """
@@ -195,7 +230,6 @@ def BTLoss(reference, similar, dissimilar, optimizer):
     Negative log likelihood of Bradley-Terry Penalty, to be minimized. y = beta.*x
     Focus on global contrastive
     """
-    start_time = time.time()
     loss = 0
     for ref, sim, dissim in zip(reference, similar, dissimilar):
         similar_pred = cos(ref, sim) / temperature
@@ -206,8 +240,7 @@ def BTLoss(reference, similar, dissimilar, optimizer):
     optimizer.step()
     optimizer.zero_grad()
     cum_loss = loss.item()
-    end_time = time.time()
-    return cum_loss, end_time - start_time
+    return cum_loss
 
 def ContrastiveLoss(reference, similar, dissimilar, optimizer):
     """
@@ -246,6 +279,7 @@ def train(global_step, train_loader, update_arc, model_save_prefix):
             step += 1
             # concat two different transforms
             x = batch["image"].cuda()
+            start_time = time.time()
             # fw pass
             if update_arc == "feat":
                 input, _ = model(x)  # latent features are the input
@@ -254,15 +288,18 @@ def train(global_step, train_loader, update_arc, model_save_prefix):
             # split features into two different volumes
             f1, f2 = torch.split(input, [batch_size, batch_size], dim=0)
             # create triplets
-            if update_arc == "feat":
-                reference, similar, dissimilar = extract_triplets(f1, f2, slice_dimension)
-            else:
-                reference, similar, dissimilar = extract_triplets_more_partitions(f1, f2, slice_dimension)
+            #if update_arc == "feat":  # only 2 partitions
+            #    reference, similar, dissimilar = extract_triplets(f1, f2, slice_dimension)
+            #else:
+            reference, similar, dissimilar = extract_triplets_more_partitions(f1, f2, slice_dimension)
             # loss and optimize
             if args.loss == "ranking":
-                ranking_loss, loss_time = BTLoss(reference, similar, dissimilar, optimizer)
+                ranking_loss = BTLoss(reference, similar, dissimilar, optimizer)
             else:
-                ranking_loss, loss_time = ContrastiveLoss(reference, similar, dissimilar, optimizer)
+                ranking_loss = ContrastiveLoss(reference, similar, dissimilar, optimizer)
+            end_time = time.time()
+            loss_time = end_time - start_time
+            # Record
             epoch_ranking_loss += ranking_loss
             epoch_time += loss_time
             epoch_iterator.set_description(
@@ -287,110 +324,158 @@ def train(global_step, train_loader, update_arc, model_save_prefix):
 
 if __name__ == '__main__':
     """
-    python unetr_btcv_ranking_pretraining_3d.py "./dataset/" "./results" 14 50 16 0.0001 0.1 "ranking"
+    python unetr_btcv_ranking_pretraining_3d.py "./dataset" "Task01_BrainTumour" "./results" 4 5 0.0001 0.1 "ranking"
+    python unetr_btcv_ranking_pretraining_3d.py "./dataset" "Task09_Spleen" "./results" 2 5 0.0001 0.1 "ranking"
+    python unetr_btcv_ranking_pretraining_3d.py "./dataset" "abdomenCT" "./results" 14 5 0.0001 0.1 "ranking"
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument('data_dir', type=str, default="./dataset/")
+    parser.add_argument('data_dir', type=str, default="./dataset")
+    parser.add_argument('dataset_name', type=str, default="abdomenCT")
     parser.add_argument('root_dir', type=str, default="./results")
     parser.add_argument('n_classes', type=int, default=14)
-    parser.add_argument('train_size', type=int, default=50)
-    parser.add_argument('crop_size', type=int, default=16)
+    parser.add_argument('n_fold', type=int, default=5)
     parser.add_argument('learning_rate', type=float, default=0.0001)
     parser.add_argument('temperature', type=float, default=0.1)
     parser.add_argument('loss', type=str, default="ranking")
     args = parser.parse_args()
 
     # Dataset parameters
-    n_classes = args.n_classes
-    train_size = args.train_size
     data_dir = args.data_dir
+    dataset_name = args.dataset_name
+    n_classes = args.n_classes
+    n_fold = args.n_fold
 
     # Tuned parameters based on dataset
     root_dir = args.root_dir + "_" + args.loss
+    print("Processing dataset", dataset_name)
+    root_dir = os.path.join(root_dir, dataset_name)
     learning_rate = args.learning_rate
     temperature = args.temperature
-    crop_size = args.crop_size  # bottleneck features are 2 dimensional
 
     # fixed for now
     num_partitions = 4
     batch_size = 2
 
-    if not os.path.isdir(root_dir):
-        os.mkdir(root_dir)
+    # Crop size and input channel size
+    if "Task01" in dataset_name:
+        crop_size = 128
+        add_input_channel = False
+    elif "Task09" in dataset_name:
+        crop_size = 96
+        add_input_channel = True
+    else:
+        crop_size = 16  # bottleneck features are 2 dimensional
+        add_input_channel = True
 
-    # Data transforms
-    train_transforms = Compose(
-        [
-            LoadImaged(keys=["image", "label"]),
-            AddChanneld(keys=["image", "label"]),
-            Spacingd(
-                keys=["image", "label"],
-                pixdim=(1.5, 1.5, 2.0),
-                mode=("bilinear", "nearest"),
-            ),
-            Orientationd(keys=["image", "label"], axcodes="RAS"),
-            ScaleIntensityRanged(
-                keys=["image"],
-                a_min=-175,
-                a_max=250,
-                b_min=0.0,
-                b_max=1.0,
-                clip=True,
-            ),
-            CropForegroundd(keys=["image", "label"], source_key="image"),
-            RandSpatialCropSamplesd(
-                keys=["image", "label"],
-                roi_size=(crop_size, crop_size, crop_size), random_size=False,
-                num_samples=batch_size,  # a pair of transforms on each volume
-            ),
-            RandFlipd(
-                keys=["image", "label"],
-                spatial_axis=[0],
-                prob=0.10,
-            ),
-            RandFlipd(
-                keys=["image", "label"],
-                spatial_axis=[1],
-                prob=0.10,
-            ),
-            RandFlipd(
-                keys=["image", "label"],
-                spatial_axis=[2],
-                prob=0.10,
-            ),
-            RandRotate90d(
-                keys=["image", "label"],
-                prob=0.10,
-                max_k=3,
-            ),
-            RandShiftIntensityd(
-                keys=["image"],
-                offsets=0.10,
-                prob=0.50,
-            ),
-            ToTensord(keys=["image", "label"]),
-        ]
-    )
-
-    # Data loader
-    split_JSON = "dataset_0.json"
-    datasets = data_dir + split_JSON
-    datalist = load_decathlon_datalist(datasets, True, "training")
-    train_ds = Dataset(
-        data=datalist,
-        transform=train_transforms,  # Create two transforms of the same volume
-    )
-    train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True
-    )
-
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Data transforms, difference for 3D or 4D images
+    if add_input_channel:  # 3D image, CT, binary segmentation
+        train_transforms = Compose(
+            [
+                LoadImaged(keys=["image", "label"]),
+                AddChanneld(keys=["image", "label"]),
+                Spacingd(
+                    keys=["image", "label"],
+                    pixdim=(1.0, 1.0, 1.0),
+                    mode=("bilinear", "nearest"),
+                ),
+                Orientationd(keys=["image", "label"], axcodes="RAS"),
+                ScaleIntensityRanged(
+                    keys=["image"],
+                    a_min=-175,
+                    a_max=250,
+                    b_min=0.0,
+                    b_max=1.0,
+                    clip=True,
+                ),
+                CropForegroundd(keys=["image", "label"], source_key="image"),
+                RandSpatialCropSamplesd(
+                    keys=["image", "label"],
+                    roi_size=(crop_size, crop_size, crop_size), random_size=False,
+                    num_samples=batch_size,  # a pair of transforms on each volume
+                ),
+                RandFlipd(
+                    keys=["image", "label"],
+                    spatial_axis=[0],
+                    prob=0.10,
+                ),
+                RandFlipd(
+                    keys=["image", "label"],
+                    spatial_axis=[1],
+                    prob=0.10,
+                ),
+                RandFlipd(
+                    keys=["image", "label"],
+                    spatial_axis=[2],
+                    prob=0.10,
+                ),
+                RandRotate90d(
+                    keys=["image", "label"],
+                    prob=0.10,
+                    max_k=3,
+                ),
+                RandShiftIntensityd(
+                    keys=["image"],
+                    offsets=0.10,
+                    prob=0.50,
+                ),
+                ToTensord(keys=["image", "label"]),
+            ]
+        )
+        in_channel_size = 1
+    else:  # 4D image, MR, multi-class segmentation
+        train_transforms = Compose(
+            [
+                LoadImaged(keys=["image", "label"]),
+                EnsureChannelFirstd(keys="image"),
+                ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
+                Spacingd(
+                    keys=["image", "label"],
+                    pixdim=(1.0, 1.0, 1.0),
+                    mode=("bilinear", "nearest"),
+                ),
+                Orientationd(keys=["image", "label"], axcodes="RAS"),
+                RandSpatialCropSamplesd(
+                    keys=["image", "label"],
+                    roi_size=(crop_size, crop_size, crop_size), random_size=False,
+                    num_samples=batch_size,  # a pair of transforms on each volume
+                ),
+                RandFlipd(
+                    keys=["image", "label"],
+                    spatial_axis=[0],
+                    prob=0.10,
+                ),
+                RandFlipd(
+                    keys=["image", "label"],
+                    spatial_axis=[1],
+                    prob=0.10,
+                ),
+                RandFlipd(
+                    keys=["image", "label"],
+                    spatial_axis=[2],
+                    prob=0.10,
+                ),
+                RandRotate90d(
+                    keys=["image", "label"],
+                    prob=0.10,
+                    max_k=3,
+                ),
+                RandShiftIntensityd(
+                    keys=["image"],
+                    offsets=0.10,
+                    prob=0.50,
+                ),
+                NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
+                ToTensord(keys=["image", "label"]),
+            ]
+        )
+        in_channel_size = 4
 
     # Architecture
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = UNETR(
-        in_channels=1,
-        out_channels=n_classes,
+        in_channels=in_channel_size,
+        out_channels=n_classes-1,
         img_size=(crop_size, crop_size, crop_size),
         feature_size=16,
         hidden_size=768,
@@ -412,75 +497,105 @@ if __name__ == '__main__':
     eval_num = 50
     rtol = 1e-2
 
-    # update features
-    params_conv = False
-    global_step = 0
-    epoch_ranking_loss_values = []
-    epoch_time_values = []
-    update_arc = "feat"
-    model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
-    # checkpoint if exists
-    if os.path.exists(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")):
-        global_step = 0
-        print(
-            "Loading Model Saved At Global Step {} for {}!".format(global_step, update_arc)
-        )
-        model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
-    while not params_conv:
-        global_step = train(global_step, train_loader, update_arc, model_save_prefix)
-        if global_step <= eval_num:
-            avg_obj = np.mean(epoch_ranking_loss_values[:-1])
-        else:
-            avg_obj = np.mean(epoch_ranking_loss_values[-eval_num - 1:-1])
-        params_conv = np.abs(avg_obj - epoch_ranking_loss_values[-1]) < rtol * avg_obj or \
-                      global_step >= max_iterations  # check conv.
-    print(
-        "Training Converged At Global Step {} for {}!".format(global_step, update_arc)
+    # CROSS VALIDATION: load dataset and split
+    cvdataset = CrossValidation(
+        dataset_cls=DecathlonDataset,
+        nfolds=n_fold,
+        seed=12345,
+        root_dir=data_dir,
+        task=dataset_name,
+        section="training",
+        download=False,
+        cache_rate=0.0,
+        num_workers=4,
     )
+    for fold_idx in range(n_fold):
+        # make root directory if does not exist
+        root_dir += "_" + str(fold_idx)
+        if not os.path.isdir(root_dir):
+            os.mkdir(root_dir)
+        print("Root directory is {}".format(root_dir))
 
-    # Evaluation
-    model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
-    plt.figure("train", (12, 6))
-    plt.title("Iteration Average Loss")
-    x = [np.sum(epoch_time_values[:i+1]) for i in range(len(epoch_time_values))]
-    y = epoch_ranking_loss_values
-    plt.xlabel("Time(s)")
-    plt.plot(x, y)
-    plt.savefig(os.path.join(root_dir, model_save_prefix + "_train.png"))
-    plt.close()
+        # current fold
+        train_ds = cvdataset.get_dataset(folds=[fold_idx1
+                                                for fold_idx1 in range(n_fold) if fold_idx != fold_idx1])
+        print("Train dataset length: ", len(train_ds))
 
-    # update reconstructions, freezing encoder
-    params_conv = False
-    global_step = 0
-    epoch_ranking_loss_values = []
-    epoch_time_values = []
-    update_arc = "recon"
-    model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
-    # checkpoint if exists
-    if os.path.exists(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")):
-        global_step = 0
-        print(
-            "Loading Model Saved At Global Step {} for {}!".format(global_step, update_arc)
+        # Data loader
+        train_ds.transform = train_transforms
+        train_loader = DataLoader(
+            train_ds, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True
         )
-        model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
-    while not params_conv:
-        global_step = train(global_step, train_loader, update_arc, model_save_prefix)
-        if global_step <= eval_num:
-            avg_obj = np.mean(epoch_ranking_loss_values[:-1])
-        else:
-            avg_obj = np.mean(epoch_ranking_loss_values[-eval_num - 1:-1])
-        params_conv = np.abs(avg_obj - epoch_ranking_loss_values[-1]) < rtol * avg_obj or \
-                      global_step >= max_iterations  # check conv.
-    print(
-        "Training Converged At Global Step {} for {}!".format(global_step, update_arc)
-    )
 
-    # Evaluation
-    model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
-    plt.figure("train", (12, 6))
-    plt.title("Iteration Average Loss")
-    x = [np.sum(epoch_time_values[:i+1]) for i in range(len(epoch_time_values))]
-    y = epoch_ranking_loss_values
-    plt.xlabel("Time(s)")
-    plt.plot(x, y)
-    plt.savefig(os.path.join(root_dir, model_save_prefix + "_train.png"))
+        # update features
+        params_conv = False
+        global_step = 0
+        epoch_ranking_loss_values = []
+        epoch_time_values = []
+        update_arc = "feat"
+        model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
+        # checkpoint if exists
+        if os.path.exists(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")):
+            global_step = 0
+            print(
+                "Loading Model Saved At Global Step {} for {}!".format(global_step, update_arc)
+            )
+            model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
+        while not params_conv:
+            global_step = train(global_step, train_loader, update_arc, model_save_prefix)
+            if global_step <= eval_num:
+                avg_obj = np.mean(epoch_ranking_loss_values[:-1])
+            else:
+                avg_obj = np.mean(epoch_ranking_loss_values[-eval_num - 1:-1])
+            params_conv = np.abs(avg_obj - epoch_ranking_loss_values[-1]) < rtol * avg_obj or \
+                          global_step >= max_iterations  # check conv.
+        print(
+            "Training Converged At Global Step {} for {}!".format(global_step, update_arc)
+        )
+
+        # Evaluation
+        model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
+        plt.figure("train", (12, 6))
+        plt.title("Iteration Average Loss")
+        x = [np.sum(epoch_time_values[:i+1]) for i in range(len(epoch_time_values))]
+        y = epoch_ranking_loss_values
+        plt.xlabel("Time(s)")
+        plt.plot(x, y)
+        plt.savefig(os.path.join(root_dir, model_save_prefix + "_train.png"))
+        plt.close()
+
+        # update reconstructions, freezing encoder
+        params_conv = False
+        global_step = 0
+        epoch_ranking_loss_values = []
+        epoch_time_values = []
+        update_arc = "recon"
+        model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
+        # checkpoint if exists
+        if os.path.exists(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")):
+            global_step = 0
+            print(
+                "Loading Model Saved At Global Step {} for {}!".format(global_step, update_arc)
+            )
+            model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
+        while not params_conv:
+            global_step = train(global_step, train_loader, update_arc, model_save_prefix)
+            if global_step <= eval_num:
+                avg_obj = np.mean(epoch_ranking_loss_values[:-1])
+            else:
+                avg_obj = np.mean(epoch_ranking_loss_values[-eval_num - 1:-1])
+            params_conv = np.abs(avg_obj - epoch_ranking_loss_values[-1]) < rtol * avg_obj or \
+                          global_step >= max_iterations  # check conv.
+        print(
+            "Training Converged At Global Step {} for {}!".format(global_step, update_arc)
+        )
+
+        # Evaluation
+        model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
+        plt.figure("train", (12, 6))
+        plt.title("Iteration Average Loss")
+        x = [np.sum(epoch_time_values[:i+1]) for i in range(len(epoch_time_values))]
+        y = epoch_ranking_loss_values
+        plt.xlabel("Time(s)")
+        plt.plot(x, y)
+        plt.savefig(os.path.join(root_dir, model_save_prefix + "_train.png"))

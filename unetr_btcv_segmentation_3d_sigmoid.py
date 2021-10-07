@@ -10,6 +10,7 @@ import json
 from monai.losses import DiceCELoss
 from monai.inferers import sliding_window_inference
 from monai.transforms import (
+    Activations,
     AsDiscrete,
     AddChanneld,
     Compose,
@@ -20,13 +21,14 @@ from monai.transforms import (
     NormalizeIntensityd,
     Orientationd,
     RandFlipd,
-    RandCropByPosNegLabeld,
+    RandSpatialCropSamplesd,
     RandShiftIntensityd,
     RandScaleIntensityd,
     ScaleIntensityRanged,
     Spacingd,
     RandRotate90d,
     ToTensord,
+    EnsureType,
     EnsureTyped,
 )
 
@@ -64,7 +66,7 @@ label shape: torch.Size([n_seg_classes, img_dim_x, img_dim_y, img_dim_z])
 n_seg_classes = 2 (edema / tumor core)
 n_img_channels, img_dim_x, img_dim_y, img_dim_z = 1, 91, 109, 91
 """
-class ConvertBasedOnBratsClassesd(MapTransform):
+class ConvertToMultiChannelBasedOnBratsClassesd(MapTransform):
     """
     Convert labels to multi channels based on brats classes:
     label 1 is the peritumoral edema
@@ -78,43 +80,40 @@ class ConvertBasedOnBratsClassesd(MapTransform):
     def __call__(self, data):
         d = dict(data)
         for key in self.keys:
-            result = np.zeros(d[key].shape)
+            result = []
             # merge label 2 and label 3 to construct TC
-            result[np.logical_or(d[key] == 2, d[key] == 3)] = 1
+            result.append(np.logical_or(d[key] == 2, d[key] == 3))
             # merge labels 1, 2 and 3 to construct WT
-            result[np.logical_or(np.logical_or(d[key] == 2, d[key] == 3), d[key] == 1)] = 2
+            result.append(
+                np.logical_or(
+                    np.logical_or(d[key] == 2, d[key] == 3), d[key] == 1
+                )
+            )
             # label 2 is ET
-            result[d[key] == 2] = 3
-            d[key] = result.astype(np.float32)
+            result.append(d[key] == 2)
+            d[key] = np.stack(result, axis=0).astype(np.float32)
         return d
 
 def validation(epoch_iterator_val):
     model.eval()
-    dice_vals = list()
     with torch.no_grad():
         for step, batch in enumerate(epoch_iterator_val):
             val_inputs, val_labels = (batch["image"].cuda(), batch["label"].cuda())
-            val_outputs = sliding_window_inference(val_inputs, (crop_size, crop_size, crop_size), 4, model)
-            val_labels_list = decollate_batch(val_labels)
-            val_labels_convert = [
-                post_label(val_label_tensor) for val_label_tensor in val_labels_list
-            ]
-            val_outputs_list = decollate_batch(val_outputs)
-            val_output_convert = [
-                post_pred(val_pred_tensor) for val_pred_tensor in val_outputs_list
-            ]
-            dice_metric(y_pred=val_output_convert, y=val_labels_convert)
-            dice = dice_metric.aggregate().item()
-            dice_vals.append(dice)
-            epoch_iterator_val.set_description(
-                "Validate (%d / %d Steps) (dice=%2.5f)" % (global_step, 10.0, dice)
-            )
-        dice_metric.reset()
-    mean_dice_val = np.mean(dice_vals)
-    return mean_dice_val
+            val_outputs = sliding_window_inference(val_inputs, (crop_size, crop_size, crop_size), 1, model)
+            val_outputs = [post_trans(i) for i in decollate_batch(val_outputs)]
+            dice_metric(y_pred=val_outputs, y=val_labels)
+            dice_metric_batch(y_pred=val_outputs, y=val_labels)
+
+        metric = [dice_metric.aggregate().item()]
+        metric_batch = dice_metric_batch.aggregate()
+        for class_idx in range(len(metric_batch)):
+            metric.append(metric_batch[class_idx].item())
+    dice_metric.reset()
+    dice_metric_batch.reset()
+    return metric
 
 
-def train(global_step, train_loader, dice_val_best, global_step_best):
+def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_list_best):
     model.train()
     epoch_loss = 0
     epoch_iterator = tqdm(
@@ -138,29 +137,31 @@ def train(global_step, train_loader, dice_val_best, global_step_best):
             epoch_iterator_val = tqdm(
                 val_loader, desc="Validate (X / X Steps) (dice=X.X)", dynamic_ncols=True
             )
-            dice_val = validation(epoch_iterator_val)
+            metric = validation(epoch_iterator_val)  # list of aggregate -> per class
             epoch_loss /= step
             epoch_loss_values.append(epoch_loss)
-            metric_values.append(dice_val)
+            metric_values.append(metric)
+            dice_val = metric[0]
             if dice_val > dice_val_best:
                 dice_val_best = dice_val
+                dice_val_list_best = metric[1:]
                 global_step_best = global_step
                 torch.save(
                     model.state_dict(), os.path.join(root_dir, "best_metric_model.pth")
                 )
                 print(
-                    "Model Was Saved At Global Step {}! Current Best Avg. Dice: {} Current Avg. Dice: {}".format(
-                        global_step, dice_val_best, dice_val
+                    "Model Was Saved At Global Step {}! Current Best Avg. Dice: {} Current Avg. Dice: {} Others: {}"
+                        .format(global_step, dice_val_best, dice_val, dice_val_list_best
                     )
                 )
             else:
                 print(
-                    "Model Was Not Saved ! Current Best Avg. Dice: {} Current Avg. Dice: {}".format(
-                        dice_val_best, dice_val
+                    "Model Was Not Saved ! Current Best Avg. Dice: {} Current Avg. Dice: {} Others: {}"
+                        .format(global_step, dice_val_best, dice_val, dice_val_list_best
                     )
                 )
         global_step += 1
-    return global_step, dice_val_best, global_step_best
+    return global_step, dice_val_best, global_step_best, dice_val_list_best
 
 if __name__ == '__main__':
     """
@@ -294,15 +295,13 @@ if __name__ == '__main__':
             [
                 LoadImaged(keys=["image", "label"]),
                 EnsureChannelFirstd(keys="image"),
-                AddChanneld(keys="label"),
-                ConvertBasedOnBratsClassesd(keys="label"),
+                ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
                 Spacingd(
                     keys=["image", "label"],
                     pixdim=(1.0, 1.0, 1.0),
                     mode=("bilinear", "nearest"),
                 ),
                 Orientationd(keys=["image", "label"], axcodes="RAS"),
-                #CropForegroundd(keys=["image", "label"], source_key="image"),
                 RandCropByPosNegLabeld(
                     keys=["image", "label"],
                     label_key="label",
@@ -346,15 +345,13 @@ if __name__ == '__main__':
             [
                 LoadImaged(keys=["image", "label"]),
                 EnsureChannelFirstd(keys="image"),
-                AddChanneld(keys="label"),
-                ConvertBasedOnBratsClassesd(keys="label"),
+                ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
                 Spacingd(
                     keys=["image", "label"],
                     pixdim=(1.0, 1.0, 1.0),
                     mode=("bilinear", "nearest"),
                 ),
                 Orientationd(keys=["image", "label"], axcodes="RAS"),
-                #CropForegroundd(keys=["image", "label"], source_key="image"),
                 NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
                 ToTensord(keys=["image", "label"]),
             ]
@@ -366,7 +363,7 @@ if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = UNETR(
         in_channels=in_channel_size,
-        out_channels=n_classes,
+        out_channels=n_classes-1,
         img_size=(crop_size, crop_size, crop_size),
         feature_size=16,
         hidden_size=768,
@@ -386,14 +383,16 @@ if __name__ == '__main__':
     # Loss and optimizer
     max_iterations = 25000
     eval_num = 500
-    loss_function = DiceCELoss(to_onehot_y=True, softmax=True)
+    loss_function = DiceCELoss(to_onehot_y=False, sigmoid=True)
     torch.backends.cudnn.benchmark = True
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-5)
 
     # Metrics
-    post_label = AsDiscrete(to_onehot=True, n_classes=n_classes)
-    post_pred = AsDiscrete(argmax=True, to_onehot=True, n_classes=n_classes)
     dice_metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False)
+    dice_metric_batch = DiceMetric(include_background=True, reduction="mean_batch")
+    post_trans = Compose(
+        [EnsureType(), Activations(sigmoid=True), AsDiscrete(threshold_values=True)]
+    )
 
     # CROSS VALIDATION: load dataset and split
     cvdataset = CrossValidation(
@@ -443,12 +442,13 @@ if __name__ == '__main__':
         if mode == "train":
             global_step = 0
             dice_val_best = 0.0
+            dice_val_list_best = 0.0
             global_step_best = 0
             epoch_loss_values = []
             metric_values = []
             while global_step < max_iterations:
-                global_step, dice_val_best, global_step_best = train(
-                    global_step, train_loader, dice_val_best, global_step_best
+                global_step, dice_val_best, global_step_best, dice_val_list_best = train(
+                    global_step, train_loader, dice_val_best, global_step_best, dice_val_list_best
                 )
             np.save(os.path.join(root_dir, "loss"), epoch_loss_values)
             np.save(os.path.join(root_dir, "metric"), metric_values)
@@ -456,8 +456,9 @@ if __name__ == '__main__':
             # Evaluation
             model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
             print(
-                f"train completed, best_metric: {dice_val_best:.4f} "
-                f"at iteration: {global_step_best}"
+                "train completed, best_metric: {} ".format(dice_val_best)+
+                "best_metric_list: {} ".format(dice_val_list_best)+
+                "at iteration: {}".format(global_step_best)
             )
 
             # Performance visualization
@@ -471,7 +472,7 @@ if __name__ == '__main__':
             plt.subplot(1, 2, 2)
             plt.title("Val Mean Dice")
             x = [eval_num * (i + 1) for i in range(len(metric_values))]
-            y = metric_values
+            y = np.array(metric_values[:, 0])
             plt.xlabel("Iteration")
             plt.plot(x, y)
             plt.savefig(os.path.join(root_dir, "train_val.png"))
