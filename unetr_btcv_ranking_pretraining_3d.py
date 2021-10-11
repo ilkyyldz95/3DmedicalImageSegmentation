@@ -33,6 +33,7 @@ from monai.transforms import (
 from monai.config import print_config
 from unetr import UNETR
 from monai.apps import DecathlonDataset, CrossValidation
+from unetr_btcv_segmentation_3d import ConvertToMultiChannelBasedOnBratsClassesd
 
 from monai.data import (
     DataLoader,
@@ -41,6 +42,7 @@ from monai.data import (
     decollate_batch,
 )
 
+import warnings
 import torch
 #torch.autograd.set_detect_anomaly(True)
 from torch.nn import CosineSimilarity
@@ -54,34 +56,6 @@ Differences from standard global contrastive loss:
 2) Using only global similarity of corresponding slice partitions
 3) Repeating global similarity for each of the 3 axes
 """
-class ConvertToMultiChannelBasedOnBratsClassesd(MapTransform):
-    """
-    Convert labels to multi channels based on brats classes:
-    label 1 is the peritumoral edema
-    label 2 is the GD-enhancing tumor
-    label 3 is the necrotic and non-enhancing tumor core
-    The possible classes are TC (Tumor core), WT (Whole tumor)
-    and ET (Enhancing tumor).
-
-    """
-
-    def __call__(self, data):
-        d = dict(data)
-        for key in self.keys:
-            result = []
-            # merge label 2 and label 3 to construct TC
-            result.append(np.logical_or(d[key] == 2, d[key] == 3))
-            # merge labels 1, 2 and 3 to construct WT
-            result.append(
-                np.logical_or(
-                    np.logical_or(d[key] == 2, d[key] == 3), d[key] == 1
-                )
-            )
-            # label 2 is ET
-            result.append(d[key] == 2)
-            d[key] = np.stack(result, axis=0).astype(np.float32)
-        return d
-
 def extract_triplets_more_partitions(batch1, batch2, slice_dimension=2):
     """
     Two volumes, each with a pair of transforms on the volume
@@ -248,7 +222,6 @@ def ContrastiveLoss(reference, similar, dissimilar, optimizer):
     medical image segmentation with limited annotations
     Focus on global contrastive
     """
-    start_time = time.time()
     loss = 0
     for ref, sim in zip(reference, similar):
         numerator = torch.exp(cos(ref, sim) / temperature)
@@ -260,8 +233,7 @@ def ContrastiveLoss(reference, similar, dissimilar, optimizer):
     optimizer.step()
     optimizer.zero_grad()
     cum_loss = loss.item()
-    end_time = time.time()
-    return cum_loss, end_time - start_time
+    return cum_loss
 
 def train(global_step, train_loader, update_arc, model_save_prefix):
     model.train()
@@ -276,6 +248,9 @@ def train(global_step, train_loader, update_arc, model_save_prefix):
         for step, batch in enumerate(epoch_iterator):
             # batch is concatenation of Two volumes, each with a pair of transforms on the volume
             print("Input batch shape", batch["image"].shape)
+            if batch["image"].shape[0] != 4:
+                warnings.warn("=> We need a transform pair on a volume pair")
+                continue
             step += 1
             # concat two different transforms
             x = batch["image"].cuda()
@@ -308,8 +283,7 @@ def train(global_step, train_loader, update_arc, model_save_prefix):
             )
 
             if (global_step % eval_num == 0 and global_step != 0) or global_step == max_iterations:
-                #epoch_ranking_loss /= step
-                #epoch_time /= step
+                epoch_ranking_loss /= step
                 epoch_ranking_loss_values.append(epoch_ranking_loss)
                 epoch_time_values.append(epoch_time)
                 torch.save(
@@ -475,7 +449,7 @@ if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = UNETR(
         in_channels=in_channel_size,
-        out_channels=n_classes-1,
+        out_channels=n_classes,
         img_size=(crop_size, crop_size, crop_size),
         feature_size=16,
         hidden_size=768,
@@ -494,7 +468,7 @@ if __name__ == '__main__':
 
     # Training
     max_iterations = 10000
-    eval_num = 50
+    eval_num = 25
     rtol = 1e-2
 
     # CROSS VALIDATION: load dataset and split
