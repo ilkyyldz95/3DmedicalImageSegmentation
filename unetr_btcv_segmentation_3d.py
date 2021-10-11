@@ -95,6 +95,14 @@ class ConvertToMultiChannelBasedOnBratsClassesd(MapTransform):
             d[key] = np.stack(result, axis=0).astype(np.float32)
         return d
 
+def ConvertFromMultiChannelToRGB(image):
+    result = np.zeros(image.shape[1:])
+    # Channels 1,2,3 <=> TC, WT, ET
+    result[image[2] == 1] = 1
+    result[image[1] == 1] = 2
+    result[image[3] == 1] = 3
+    return torch.Tensor(result[np.newaxis, :, :, :])
+
 def validation(epoch_iterator_val):
     model.eval()
     dice_vals = list()
@@ -255,9 +263,9 @@ def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_l
 
 if __name__ == '__main__':
     """
-    python unetr_btcv_segmentation_3d.py "./dataset" "Task01_BrainTumour" "./results_segmentation" 4 "./results_ranking/Task01_BrainTumour/recon_lr_0.0001_temp_0.1_best_metric_model.pth" 5 0.0001
-    python unetr_btcv_segmentation_3d.py "./dataset" "Task09_Spleen" "./results_segmentation" 2 "./results_ranking/Task09_Spleen/recon_lr_0.0001_temp_0.1_best_metric_model.pth" 5 0.0001
-    python unetr_btcv_segmentation_3d.py "./dataset" "abdomenCT" "./results_segmentation" 14 "./results_ranking/abdomenCT/recon_lr_0.0001_temp_0.1_best_metric_model.pth" 5 0.0001
+    python unetr_btcv_segmentation_3d.py "./dataset" "Task01_BrainTumour" "./results_segmentation" 4 "./results_ranking/Task01_BrainTumour/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 5 0.0001
+    python unetr_btcv_segmentation_3d.py "./dataset" "Task09_Spleen" "./results_segmentation" 2 "./results_ranking/Task09_Spleen/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 5 0.0001
+    python unetr_btcv_segmentation_3d.py "./dataset" "abdomenCT" "./results_segmentation" 14 "./results_ranking/abdomenCT/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 5 0.0001
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('data_dir', type=str, default="./dataset")
@@ -265,6 +273,7 @@ if __name__ == '__main__':
     parser.add_argument('root_dir', type=str, default="./results_segmentation")
     parser.add_argument('n_classes', type=int, default=14)
     parser.add_argument('pretrained', type=str, default="./results_ranking/abdomenCT/recon_lr_0.0001_temp_0.1_best_metric_model.pth")
+    parser.add_argument('mode', type=str, default="train")
     parser.add_argument('n_fold', type=int, default=5)
     parser.add_argument('learning_rate', type=float, default=0.0001)
     args = parser.parse_args()
@@ -275,7 +284,7 @@ if __name__ == '__main__':
     root_dir = args.root_dir
     n_classes = args.n_classes
     n_fold = args.n_fold
-    mode = "train"
+    mode = args.mode
 
     # Set correct root directory
     # if semisupervised
@@ -380,8 +389,6 @@ if __name__ == '__main__':
             ]
         )
         in_channel_size = 1
-        case_num = 0
-        slice_num = 80
 
         # Loss
         loss_function = DiceCELoss(to_onehot_y=True, softmax=True)
@@ -472,8 +479,6 @@ if __name__ == '__main__':
             ]
         )
         in_channel_size = 4
-        case_num = 0
-        slice_num = 60
 
         # Loss
         loss_function = DiceCELoss(to_onehot_y=False, sigmoid=True)
@@ -554,26 +559,11 @@ if __name__ == '__main__':
         val_loader = DataLoader(
             val_ds, batch_size=1, shuffle=False, num_workers=4, pin_memory=True
         )
-
-        img_name = os.path.split(val_ds[case_num]["image_meta_dict"]["filename_or_obj"])[1]
-        img = val_ds[case_num]["image"]
-        label = val_ds[case_num]["label"]
+        img = val_ds[0]["image"]
+        label = val_ds[0]["label"]
         img_shape = img.shape
         label_shape = label.shape
         print(f"image shape: {img_shape}, label shape: {label_shape}")
-        plt.figure("image", (24, 6))
-        for i in range(img_shape[0]):
-            plt.subplot(1, img_shape[0], i + 1)
-            plt.title(f"image channel {i}")
-            plt.imshow(img[i, :, :, slice_num].detach().cpu(), cmap="gray")
-        plt.savefig(os.path.join(root_dir, "exampleimage.png"))
-        # also visualize the 3 channels label corresponding to this image
-        plt.figure("label", (18, 6))
-        for i in range(label_shape[0]):
-            plt.subplot(1, label_shape[0], i + 1)
-            plt.title(f"label channel {i}")
-            plt.imshow(label[i, :, :, slice_num].detach().cpu())
-        plt.savefig(os.path.join(root_dir, "examplelabel.png"))
 
         # Training
         if mode == "train":
@@ -632,27 +622,43 @@ if __name__ == '__main__':
             plt.savefig(os.path.join(root_dir, "train_val.png"))
 
         # Example visualization
+        if fold_idx > 0:
+            continue
         model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
         model.eval()
+        vis_count = 0
+        no_of_vis = 10
         with torch.no_grad():
-            img_name = os.path.split(val_ds[case_num]["image_meta_dict"]["filename_or_obj"])[1]
-            img = val_ds[case_num]["image"]
-            label = val_ds[case_num]["label"]
-            val_inputs = torch.unsqueeze(img, 1).cuda()
-            val_labels = torch.unsqueeze(label, 1).cuda()
-            val_outputs = sliding_window_inference(
-                val_inputs, (crop_size, crop_size, crop_size), 4, model, overlap=0.8
-            )
-            plt.figure("check", (18, 6))
-            plt.subplot(1, 3, 1)
-            plt.title("image")
-            plt.imshow(val_inputs.cpu().numpy()[case_num, 0, :, :, slice_num], cmap="gray")
-            plt.subplot(1, 3, 2)
-            plt.title("label")
-            plt.imshow(val_labels.cpu().numpy()[case_num, 0, :, :, slice_num])
-            plt.subplot(1, 3, 3)
-            plt.title("output")
-            plt.imshow(
-                torch.argmax(val_outputs, dim=1).detach().cpu()[case_num, :, :, slice_num]
-            )
-            plt.savefig(os.path.join(root_dir, "examples.png"))
+            for case_num in range(len(val_ds)):
+                val_inputs = val_ds[case_num]["image"].to(device)
+                img_name = os.path.split(val_ds[case_num]["image_meta_dict"]["filename_or_obj"])[1]
+                val_outputs = sliding_window_inference(val_inputs.unsqueeze(0), (crop_size, crop_size, crop_size),
+                                                       4, predictor=model, overlap=0.8)
+                val_output = post_pred(val_outputs[0]).cpu()
+                val_label = val_ds[case_num]["label"]
+                if not add_input_channel:
+                    val_label = ConvertFromMultiChannelToRGB(val_label)
+                    val_output = ConvertFromMultiChannelToRGB(val_output)
+                for slice_num in range(val_inputs.shape[-1]):
+                    n_classes_per_slice = len(np.unique(val_label[0, :, :, slice_num].numpy()))
+                    if n_classes_per_slice < n_classes:
+                        continue
+                    n_classes_per_slice = len(np.unique(val_output[0, :, :, slice_num].numpy()))
+                    if n_classes_per_slice < n_classes:
+                        continue
+                    plt.figure()
+                    plt.subplot(1, 2, 1)
+                    plt.title("label")
+                    plt.imshow(val_inputs[0, :, :, slice_num].detach().cpu(), 'gray', interpolation='none')
+                    plt.imshow(val_label[0, :, :, slice_num], 'cubehelix', interpolation='none', alpha=0.5)
+                    plt.tick_params(which='both', bottom=False, left=False, labelbottom=False, labelleft=False)
+                    plt.subplot(1, 2, 2)
+                    plt.title("prediction")
+                    plt.imshow(val_inputs[0, :, :, slice_num].detach().cpu(), 'gray', interpolation='none')
+                    plt.imshow(val_output[0, :, :, slice_num], 'cubehelix', interpolation='none', alpha=0.5)
+                    plt.tick_params(which='both', bottom=False, left=False, labelbottom=False, labelleft=False)
+                    plt.savefig(os.path.join(root_dir, "example_{}_{}.png".format(img_name, slice_num)))
+                    vis_count += 1
+                    break
+                if vis_count > no_of_vis:
+                    break
