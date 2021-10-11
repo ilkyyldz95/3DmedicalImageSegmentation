@@ -32,7 +32,7 @@ from monai.transforms import (
 )
 
 from monai.config import print_config
-from monai.metrics import DiceMetric
+from monai.metrics import DiceMetric, HausdorffDistanceMetric, ConfusionMatrixMetric
 from monai.networks.nets import UNETR
 from monai.apps import DecathlonDataset, CrossValidation
 
@@ -112,6 +112,9 @@ def validation(epoch_iterator_val):
             ]
             dice_metric(y_pred=val_output_convert, y=val_labels_convert)
             dice = [dice_metric.aggregate().item()]
+            epoch_iterator_val.set_description\
+                ("Validate (%d / %d Steps) (dice=%2.5f)" % (global_step, max_iterations, dice[0]))
+            # per class evaluation
             dice_metric_batch(y_pred=val_output_convert, y=val_labels_convert)
             dice_batch = dice_metric_batch.aggregate()
             for class_idx in range(len(dice_batch)):
@@ -123,6 +126,82 @@ def validation(epoch_iterator_val):
     mean_dice_val = np.mean(dice_vals, 0)
     return mean_dice_val
 
+def validation_all_metrics(epoch_iterator_val):
+    model.eval()
+    dice_vals = list()
+    precision_vals = list()
+    recall_vals = list()
+    hsd_vals = list()
+    with torch.no_grad():
+        for step, batch in enumerate(epoch_iterator_val):
+            val_inputs, val_labels = (batch["image"].cuda(), batch["label"].cuda())
+            val_outputs = sliding_window_inference(val_inputs, (crop_size, crop_size, crop_size), 4, model)
+            val_labels_list = decollate_batch(val_labels)
+            val_labels_convert = [
+                post_label(val_label_tensor) for val_label_tensor in val_labels_list
+            ]
+            val_outputs_list = decollate_batch(val_outputs)
+            val_output_convert = [
+                post_pred(val_pred_tensor) for val_pred_tensor in val_outputs_list
+            ]
+
+            dice_metric(y_pred=val_output_convert, y=val_labels_convert)
+            dice = [dice_metric.aggregate().item()]
+
+            precision_metric(y_pred=val_output_convert, y=val_labels_convert)
+            precision = [precision_metric.aggregate()[0].item()]
+
+            recall_metric(y_pred=val_output_convert, y=val_labels_convert)
+            recall = [recall_metric.aggregate()[0].item()]
+
+            hsd_metric(y_pred=val_output_convert, y=val_labels_convert)
+            hsd = [hsd_metric.aggregate().item()]
+
+            epoch_iterator_val.set_description\
+                ("Validate (%d / %d Steps) (dice=%2.5f) (prec=%2.5f) (rec=%2.5f) (hsd=%2.5f)" \
+                 % (global_step, max_iterations, dice[0], precision[0], recall[0], hsd[0]))
+
+            # per class evaluation
+            dice_metric_batch(y_pred=val_output_convert, y=val_labels_convert)
+            dice_batch = dice_metric_batch.aggregate()
+            for class_idx in range(len(dice_batch)):
+                dice.append(dice_batch[class_idx].item())
+            dice_vals.append(dice)
+
+            precision_metric_batch(y_pred=val_output_convert, y=val_labels_convert)
+            precision_batch = precision_metric_batch.aggregate()[0]
+            for class_idx in range(len(precision_batch)):
+                precision.append(precision_batch[class_idx].item())
+            precision_vals.append(precision)
+
+            recall_metric_batch(y_pred=val_output_convert, y=val_labels_convert)
+            recall_batch = recall_metric_batch.aggregate()[0]
+            for class_idx in range(len(recall_batch)):
+                recall.append(recall_batch[class_idx].item())
+            recall_vals.append(recall)
+
+            hsd_metric_batch(y_pred=val_output_convert, y=val_labels_convert)
+            hsd_batch = hsd_metric_batch.aggregate()
+            for class_idx in range(len(hsd_batch)):
+                hsd.append(hsd_batch[class_idx].item())
+            hsd_vals.append(hsd)
+        dice_metric.reset()
+        dice_metric_batch.reset()
+        precision_metric.reset()
+        precision_metric_batch.reset()
+        recall_metric.reset()
+        recall_metric_batch.reset()
+        hsd_metric.reset()
+        hsd_metric_batch.reset()
+    dice_vals = np.array(dice_vals)
+    precision_vals = np.array(precision_vals)
+    recall_vals = np.array(recall_vals)
+    hsd_vals = np.array(hsd_vals)
+    mean_dice_val = np.mean(dice_vals, 0)
+    mean_precision_val = np.mean(precision_vals, 0)
+    mean_recall_val = np.mean(recall_vals, 0)
+    mean_hsd_val = np.mean(hsd_vals, 0)
+    return mean_dice_val, mean_precision_val, mean_recall_val, mean_hsd_val
 
 def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_list_best):
     model.train()
@@ -151,7 +230,7 @@ def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_l
             metric = validation(epoch_iterator_val)  # list of aggregate -> per class
             epoch_loss /= step
             epoch_loss_values.append(epoch_loss)
-            metric_values.append(metric)
+            dice_values_list.append(metric)
             dice_val = metric[0]
             if dice_val > dice_val_best:
                 dice_val_best = dice_val
@@ -160,17 +239,15 @@ def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_l
                 torch.save(
                     model.state_dict(), os.path.join(root_dir, "best_metric_model.pth")
                 )
-                np.save(os.path.join(root_dir, "loss"), epoch_loss_values)
-                np.save(os.path.join(root_dir, "metric"), metric_values)
                 print(
-                    "Model Was Saved At Global Step {}! Current Best Avg. Dice: {} Current Avg. Dice: {} Others: {}"
+                    "Model Was Saved At Global Step {}! Current Best Avg. Dice: {} Current Avg. Dice: {} Per class: {}"
                         .format(global_step, dice_val_best, dice_val, dice_val_list_best
                     )
                 )
             else:
                 print(
-                    "Model Was Not Saved ! Current Best Avg. Dice: {} Current Avg. Dice: {} Others: {}"
-                        .format(global_step, dice_val_best, dice_val, dice_val_list_best
+                    "Model Was Not Saved ! Current Best Avg. Dice: {} Current Avg. Dice: {} Per class: {}"
+                        .format(dice_val_best, dice_val, dice_val_list_best
                     )
                 )
         global_step += 1
@@ -313,6 +390,16 @@ if __name__ == '__main__':
         post_pred = AsDiscrete(argmax=True, to_onehot=True, n_classes=n_classes)
         dice_metric = DiceMetric(include_background=False, reduction="mean", get_not_nans=False)
         dice_metric_batch = DiceMetric(include_background=False, reduction="mean_batch", get_not_nans=False)
+        precision_metric = ConfusionMatrixMetric(include_background=False, reduction="mean", get_not_nans=False,
+                                          metric_name="precision")
+        precision_metric_batch = ConfusionMatrixMetric(include_background=False, reduction="mean_batch", get_not_nans=False,
+                                                metric_name="precision")
+        recall_metric = ConfusionMatrixMetric(include_background=False, reduction="mean", get_not_nans=False,
+                                          metric_name="sensitivity")
+        recall_metric_batch = ConfusionMatrixMetric(include_background=False, reduction="mean_batch", get_not_nans=False,
+                                                metric_name="sensitivity")
+        hsd_metric = HausdorffDistanceMetric(include_background=False, reduction="mean", get_not_nans=False)
+        hsd_metric_batch = HausdorffDistanceMetric(include_background=False, reduction="mean_batch", get_not_nans=False)
 
     else:  # 4D image, MR, multi-class segmentation
         train_transforms = Compose(
@@ -395,6 +482,16 @@ if __name__ == '__main__':
         post_pred = Compose([Activations(sigmoid=True), AsDiscrete(threshold_values=True)])
         dice_metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False)
         dice_metric_batch = DiceMetric(include_background=True, reduction="mean_batch", get_not_nans=False)
+        precision_metric = ConfusionMatrixMetric(include_background=True, reduction="mean", get_not_nans=False,
+                                          metric_name="precision")
+        precision_metric_batch = ConfusionMatrixMetric(include_background=True, reduction="mean_batch", get_not_nans=False,
+                                                metric_name="precision")
+        recall_metric = ConfusionMatrixMetric(include_background=True, reduction="mean", get_not_nans=False,
+                                       metric_name="sensitivity")
+        recall_metric_batch = ConfusionMatrixMetric(include_background=True, reduction="mean_batch", get_not_nans=False,
+                                             metric_name="sensitivity")
+        hsd_metric = HausdorffDistanceMetric(include_background=True, reduction="mean", get_not_nans=False)
+        hsd_metric_batch = HausdorffDistanceMetric(include_background=True, reduction="mean_batch", get_not_nans=False)
 
     # Architecture
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -419,8 +516,6 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(args.pretrained))
 
     # Optimizer
-    max_iterations = 25000
-    eval_num = 500
     torch.backends.cudnn.benchmark = True
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-5)
 
@@ -483,11 +578,18 @@ if __name__ == '__main__':
         # Training
         if mode == "train":
             global_step = 0
+            max_iterations = 25000
+            eval_num = 500
+
             dice_val_best = 0.0
             dice_val_list_best = 0.0
             global_step_best = 0
             epoch_loss_values = []
-            metric_values = []
+            dice_values_list = []
+            # checkpoint if exists
+            if os.path.exists(os.path.join(root_dir, "best_metric_model.pth")):
+                print("Loading Model Saved At Global Step {}!".format(global_step))
+                model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
             while global_step < max_iterations:
                 global_step, dice_val_best, global_step_best, dice_val_list_best = train(
                     global_step, train_loader, dice_val_best, global_step_best, dice_val_list_best
@@ -495,9 +597,21 @@ if __name__ == '__main__':
 
             # Evaluation
             model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
+            # calculate all metrics
+            epoch_iterator_val = tqdm(
+                val_loader, desc="Validate (X / X Steps) (dice=X.X) (prec=X.X) (rec=X.X) (hsd=X.X)", dynamic_ncols=True
+            )
+            mean_dice_val, mean_precision_val, mean_recall_val, mean_hsd_val = validation_all_metrics(
+                epoch_iterator_val)  # list of aggregate -> per class
+            # save dice and loss from all steps and all final metrics
+            np.save(os.path.join(root_dir, "loss"), epoch_loss_values)
+            np.save(os.path.join(root_dir, "dice_values_list"), dice_values_list)
+            np.save(os.path.join(root_dir, "precision_values"), mean_precision_val)
+            np.save(os.path.join(root_dir, "recall_values"), mean_recall_val)
+            np.save(os.path.join(root_dir, "hsd_values"), mean_hsd_val)
             print(
-                "train completed, best_metric: {} ".format(dice_val_best) +
-                "best_metric_list: {} ".format(dice_val_list_best) +
+                "train completed, best dice: {} ".format(dice_val_best) +
+                "per class: {} ".format(dice_val_list_best) +
                 "at iteration: {}".format(global_step_best)
             )
 
@@ -511,8 +625,8 @@ if __name__ == '__main__':
             plt.plot(x, y)
             plt.subplot(1, 2, 2)
             plt.title("Val Mean Dice")
-            x = [eval_num * (i + 1) for i in range(len(metric_values))]
-            y = np.array(metric_values)[:, 0]
+            x = [eval_num * (i + 1) for i in range(len(dice_values_list))]
+            y = np.array(dice_values_list)[:, 0]
             plt.xlabel("Iteration")
             plt.plot(x, y)
             plt.savefig(os.path.join(root_dir, "train_val.png"))
