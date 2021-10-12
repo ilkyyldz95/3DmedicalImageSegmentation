@@ -281,7 +281,6 @@ def train(global_step, train_loader, update_arc, model_save_prefix):
                 "Training (%d / %d Steps) (ranking loss=%2.5f) (loss time=%2.5f)" %
                 (global_step, max_iterations, ranking_loss, loss_time)
             )
-
             if (global_step % eval_num == 0 and global_step != 0) or global_step == max_iterations:
                 epoch_ranking_loss /= step
                 epoch_ranking_loss_values.append(epoch_ranking_loss)
@@ -292,6 +291,7 @@ def train(global_step, train_loader, update_arc, model_save_prefix):
                 print(
                     "Model Was Saved At Global Step {} for {}!".format(global_step, update_arc)
                 )
+                logger_file.write("Model Was Saved At Global Step {} for {} \n!".format(global_step, update_arc))
             global_step += 1
     return global_step
 
@@ -508,6 +508,7 @@ if __name__ == '__main__':
         epoch_time_values = []
         update_arc = "feat"
         model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
+        logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
         # checkpoint if exists
         if os.path.exists(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")):
             global_step = 0
@@ -526,6 +527,7 @@ if __name__ == '__main__':
         print(
             "Training Converged At Global Step {} for {}!".format(global_step, update_arc)
         )
+        logger_file.write("Training Converged At Global Step {} for {} \n!".format(global_step, update_arc))
 
         # Evaluation
         model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
@@ -545,6 +547,7 @@ if __name__ == '__main__':
         epoch_time_values = []
         update_arc = "recon"
         model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
+        logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
         # checkpoint if exists
         if os.path.exists(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")):
             global_step = 0
@@ -563,6 +566,7 @@ if __name__ == '__main__':
         print(
             "Training Converged At Global Step {} for {}!".format(global_step, update_arc)
         )
+        logger_file.write("Training Converged At Global Step {} for {} \n!".format(global_step, update_arc))
 
         # Evaluation
         model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))

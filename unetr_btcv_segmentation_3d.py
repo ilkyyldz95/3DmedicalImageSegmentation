@@ -252,19 +252,25 @@ def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_l
                         .format(global_step, dice_val_best, dice_val, dice_val_list_best
                     )
                 )
+                logger_file.write("Model Was Saved At Global Step {}! Current Best Avg. Dice: {} "
+                                  "Current Avg. Dice: {} Per class: {} \n"
+                                .format(global_step, dice_val_best, dice_val, dice_val_list_best))
             else:
                 print(
                     "Model Was Not Saved ! Current Best Avg. Dice: {} Current Avg. Dice: {} Per class: {}"
                         .format(dice_val_best, dice_val, dice_val_list_best
                     )
                 )
+                logger_file.write("Model Was Not Saved ! Current Best Avg. Dice: {} "
+                                  "Current Avg. Dice: {} Per class: {} \n"
+                                  .format(dice_val_best, dice_val, dice_val_list_best))
         global_step += 1
     return global_step, dice_val_best, global_step_best, dice_val_list_best
 
 if __name__ == '__main__':
     """
-    python unetr_btcv_segmentation_3d.py "./dataset" "Task01_BrainTumour" "./results_segmentation" 4 "./results_ranking/Task01_BrainTumour/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 5 0.0001
-    python unetr_btcv_segmentation_3d.py "./dataset" "Task09_Spleen" "./results_segmentation" 2 "./results_ranking/Task09_Spleen/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 5 0.0001
+    python unetr_btcv_segmentation_3d.py "./dataset" "Task01_BrainTumour" "./results_segmentation" 4 "./results_ranking/Task01_BrainTumour_0/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 5 0.0001
+    python unetr_btcv_segmentation_3d.py "./dataset" "Task09_Spleen" "./results_segmentation" 2 "./results_ranking/Task09_Spleen_0/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 5 0.0001
     python unetr_btcv_segmentation_3d.py "./dataset" "abdomenCT" "./results_segmentation" 14 "./results_ranking/abdomenCT/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 5 0.0001
     """
     parser = argparse.ArgumentParser()
@@ -542,6 +548,7 @@ if __name__ == '__main__':
         if not os.path.isdir(root_dir):
             os.mkdir(root_dir)
         print("Root directory is {}".format(root_dir))
+        logger_file = open(os.path.join(root_dir, "logger.txt"), "a")
 
         # current fold
         val_ds = cvdataset.get_dataset(folds=fold_idx)
@@ -604,6 +611,9 @@ if __name__ == '__main__':
                 "per class: {} ".format(dice_val_list_best) +
                 "at iteration: {}".format(global_step_best)
             )
+            logger_file.write("train completed, best dice: {} ".format(dice_val_best) +
+                "per class: {} ".format(dice_val_list_best) +
+                "at iteration: {}\n".format(global_step_best))
 
             # Performance visualization
             plt.figure("train", (12, 6))
@@ -626,8 +636,19 @@ if __name__ == '__main__':
             continue
         model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
         model.eval()
+        final_dice = np.load(os.path.join(root_dir, "dice_values_list.npy"))[-1]
+        final_precision = np.load(os.path.join(root_dir, "precision_values.npy"))
+        final_recall = np.load(os.path.join(root_dir, "recall_values.npy"))
+        final_hsd = np.load(os.path.join(root_dir, "hsd_values.npy"))
+        print(
+            "best average dice and per class: {} ".format(final_dice) +
+            "best average precision and per class: {} ".format(final_precision) +
+            "best average recall and per class: {} ".format(final_recall) +
+            "best average hsd and per class: {} ".format(final_hsd)
+        )
+        # Visualize
         vis_count = 0
-        no_of_vis = 10
+        no_of_vis = 15
         with torch.no_grad():
             for case_num in range(len(val_ds)):
                 val_inputs = val_ds[case_num]["image"].to(device)
@@ -646,18 +667,18 @@ if __name__ == '__main__':
                     n_classes_per_slice = len(np.unique(val_output[0, :, :, slice_num].numpy()))
                     if n_classes_per_slice < n_classes:
                         continue
-                    plt.figure()
+                    plt.figure("example_{}_{}".format(img_name, slice_num), (18, 6))
                     plt.subplot(1, 2, 1)
                     plt.title("label")
                     plt.imshow(val_inputs[0, :, :, slice_num].detach().cpu(), 'gray', interpolation='none')
-                    plt.imshow(val_label[0, :, :, slice_num], 'cubehelix', interpolation='none', alpha=0.5)
+                    plt.imshow(val_label[0, :, :, slice_num], 'magma', interpolation='none', alpha=0.5)
                     plt.tick_params(which='both', bottom=False, left=False, labelbottom=False, labelleft=False)
                     plt.subplot(1, 2, 2)
                     plt.title("prediction")
                     plt.imshow(val_inputs[0, :, :, slice_num].detach().cpu(), 'gray', interpolation='none')
-                    plt.imshow(val_output[0, :, :, slice_num], 'cubehelix', interpolation='none', alpha=0.5)
+                    plt.imshow(val_output[0, :, :, slice_num], 'magma', interpolation='none', alpha=0.5)
                     plt.tick_params(which='both', bottom=False, left=False, labelbottom=False, labelleft=False)
-                    plt.savefig(os.path.join(root_dir, "example_{}_{}.png".format(img_name, slice_num)))
+                    plt.savefig(os.path.join(root_dir, "example_{}_{}.pdf".format(img_name, slice_num)))
                     vis_count += 1
                     break
                 if vis_count > no_of_vis:
