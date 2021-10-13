@@ -298,16 +298,15 @@ def train(global_step, train_loader, update_arc, model_save_prefix):
 
 if __name__ == '__main__':
     """
-    python unetr_btcv_ranking_pretraining_3d.py "./dataset" "Task01_BrainTumour" "./results" 4 5 0.0001 0.1 "ranking"
-    python unetr_btcv_ranking_pretraining_3d.py "./dataset" "Task09_Spleen" "./results" 2 5 0.0001 0.1 "ranking"
-    python unetr_btcv_ranking_pretraining_3d.py "./dataset" "abdomenCT" "./results" 14 5 0.0001 0.1 "ranking"
+    python unetr_btcv_ranking_pretraining_3d.py "./dataset" "Task01_BrainTumour" "./results" 4 0.0001 0.1 "ranking"
+    python unetr_btcv_ranking_pretraining_3d.py "./dataset" "Task09_Spleen" "./results" 2 0.0001 0.1 "ranking"
+    python unetr_btcv_ranking_pretraining_3d.py "./dataset" "abdomenCT" "./results" 14 0.0001 0.1 "ranking"
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('data_dir', type=str, default="./dataset")
     parser.add_argument('dataset_name', type=str, default="abdomenCT")
     parser.add_argument('root_dir', type=str, default="./results")
     parser.add_argument('n_classes', type=int, default=14)
-    parser.add_argument('n_fold', type=int, default=5)
     parser.add_argument('learning_rate', type=float, default=0.0001)
     parser.add_argument('temperature', type=float, default=0.1)
     parser.add_argument('loss', type=str, default="ranking")
@@ -317,7 +316,7 @@ if __name__ == '__main__':
     data_dir = args.data_dir
     dataset_name = args.dataset_name
     n_classes = args.n_classes
-    n_fold = args.n_fold
+    n_fold = 5
 
     # Tuned parameters based on dataset
     root_dir = args.root_dir + "_" + args.loss

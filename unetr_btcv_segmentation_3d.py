@@ -211,7 +211,7 @@ def validation_all_metrics(epoch_iterator_val):
     mean_hsd_val = np.mean(hsd_vals, 0)
     return mean_dice_val, mean_precision_val, mean_recall_val, mean_hsd_val
 
-def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_list_best):
+def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_list_best, model_save_prefix):
     model.train()
     epoch_loss = 0
     epoch_iterator = tqdm(
@@ -245,7 +245,7 @@ def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_l
                 dice_val_list_best = metric[1:]
                 global_step_best = global_step
                 torch.save(
-                    model.state_dict(), os.path.join(root_dir, "best_metric_model.pth")
+                    model.state_dict(), os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")
                 )
                 print(
                     "Model Was Saved At Global Step {}! Current Best Avg. Dice: {} Current Avg. Dice: {} Per class: {}"
@@ -269,9 +269,9 @@ def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_l
 
 if __name__ == '__main__':
     """
-    python unetr_btcv_segmentation_3d.py "./dataset" "Task01_BrainTumour" "./results_segmentation" 4 "./results_ranking/Task01_BrainTumour_0/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 5 0.0001
-    python unetr_btcv_segmentation_3d.py "./dataset" "Task09_Spleen" "./results_segmentation" 2 "./results_ranking/Task09_Spleen_0/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 5 0.0001
-    python unetr_btcv_segmentation_3d.py "./dataset" "abdomenCT" "./results_segmentation" 14 "./results_ranking/abdomenCT/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 5 0.0001
+    python unetr_btcv_segmentation_3d.py "./dataset" "Task01_BrainTumour" "./results_segmentation" 4 "./results_ranking/Task01_BrainTumour_0/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 1e6 0.0001
+    python unetr_btcv_segmentation_3d.py "./dataset" "Task09_Spleen" "./results_segmentation" 2 "./results_ranking/Task09_Spleen_0/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 1e6 0.0001
+    python unetr_btcv_segmentation_3d.py "./dataset" "abdomenCT" "./results_segmentation" 14 "./results_ranking/abdomenCT/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 1e6 0.0001
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('data_dir', type=str, default="./dataset")
@@ -280,7 +280,7 @@ if __name__ == '__main__':
     parser.add_argument('n_classes', type=int, default=14)
     parser.add_argument('pretrained', type=str, default="./results_ranking/abdomenCT/recon_lr_0.0001_temp_0.1_best_metric_model.pth")
     parser.add_argument('mode', type=str, default="train")
-    parser.add_argument('n_fold', type=int, default=5)
+    parser.add_argument('train_size', type=float, default=1e6)
     parser.add_argument('learning_rate', type=float, default=0.0001)
     args = parser.parse_args()
 
@@ -289,8 +289,9 @@ if __name__ == '__main__':
     dataset_name = args.dataset_name
     root_dir = args.root_dir
     n_classes = args.n_classes
-    n_fold = args.n_fold
     mode = args.mode
+    train_size = args.train_size
+    n_fold = 5
 
     # Set correct root directory
     # if semisupervised
@@ -401,6 +402,7 @@ if __name__ == '__main__':
         # Metrics
         post_label = AsDiscrete(to_onehot=True, n_classes=n_classes)
         post_pred = AsDiscrete(argmax=True, to_onehot=True, n_classes=n_classes)
+        """
         dice_metric = DiceMetric(include_background=False, reduction="mean", get_not_nans=False)
         dice_metric_batch = DiceMetric(include_background=False, reduction="mean_batch", get_not_nans=False)
         precision_metric = ConfusionMatrixMetric(include_background=False, reduction="mean", get_not_nans=False,
@@ -413,7 +415,7 @@ if __name__ == '__main__':
                                                 metric_name="sensitivity")
         hsd_metric = HausdorffDistanceMetric(include_background=False, reduction="mean", get_not_nans=False)
         hsd_metric_batch = HausdorffDistanceMetric(include_background=False, reduction="mean_batch", get_not_nans=False)
-
+        """
     else:  # 4D image, MR, multi-class segmentation
         train_transforms = Compose(
             [
@@ -491,18 +493,19 @@ if __name__ == '__main__':
         # Metrics
         post_label = AsDiscrete(to_onehot=False, n_classes=n_classes)
         post_pred = Compose([Activations(sigmoid=True), AsDiscrete(threshold_values=True)])
-        dice_metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False)
-        dice_metric_batch = DiceMetric(include_background=True, reduction="mean_batch", get_not_nans=False)
-        precision_metric = ConfusionMatrixMetric(include_background=True, reduction="mean", get_not_nans=False,
-                                          metric_name="precision")
-        precision_metric_batch = ConfusionMatrixMetric(include_background=True, reduction="mean_batch", get_not_nans=False,
-                                                metric_name="precision")
-        recall_metric = ConfusionMatrixMetric(include_background=True, reduction="mean", get_not_nans=False,
-                                       metric_name="sensitivity")
-        recall_metric_batch = ConfusionMatrixMetric(include_background=True, reduction="mean_batch", get_not_nans=False,
-                                             metric_name="sensitivity")
-        hsd_metric = HausdorffDistanceMetric(include_background=True, reduction="mean", get_not_nans=False)
-        hsd_metric_batch = HausdorffDistanceMetric(include_background=True, reduction="mean_batch", get_not_nans=False)
+
+    dice_metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False)
+    dice_metric_batch = DiceMetric(include_background=True, reduction="mean_batch", get_not_nans=False)
+    precision_metric = ConfusionMatrixMetric(include_background=True, reduction="mean", get_not_nans=False,
+                                      metric_name="precision")
+    precision_metric_batch = ConfusionMatrixMetric(include_background=True, reduction="mean_batch", get_not_nans=False,
+                                            metric_name="precision")
+    recall_metric = ConfusionMatrixMetric(include_background=True, reduction="mean", get_not_nans=False,
+                                   metric_name="sensitivity")
+    recall_metric_batch = ConfusionMatrixMetric(include_background=True, reduction="mean_batch", get_not_nans=False,
+                                         metric_name="sensitivity")
+    hsd_metric = HausdorffDistanceMetric(include_background=True, reduction="mean", get_not_nans=False)
+    hsd_metric_batch = HausdorffDistanceMetric(include_background=True, reduction="mean_batch", get_not_nans=False)
 
     # Architecture
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -548,13 +551,18 @@ if __name__ == '__main__':
         if not os.path.isdir(root_dir):
             os.mkdir(root_dir)
         print("Root directory is {}".format(root_dir))
-        logger_file = open(os.path.join(root_dir, "logger.txt"), "a")
+        model_save_prefix = "lr_{}_train_size_{}".format(args.learning_rate, train_size)
+        logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
 
         # current fold
         val_ds = cvdataset.get_dataset(folds=fold_idx)
         print("Val dataset length: ", len(val_ds))
         train_ds = cvdataset.get_dataset(folds=[fold_idx1
                                         for fold_idx1 in range(n_fold) if fold_idx != fold_idx1])
+        # subsample
+        if len(train_ds) < train_size:
+            train_size = len(train_ds)
+        train_ds.data = train_ds.data[:int(train_size)]
         print("Train dataset length: ", len(train_ds))
 
         # Data loader
@@ -584,16 +592,16 @@ if __name__ == '__main__':
             epoch_loss_values = []
             dice_values_list = []
             # checkpoint if exists
-            if os.path.exists(os.path.join(root_dir, "best_metric_model.pth")):
+            if os.path.exists(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")):
                 print("Loading Model Saved At Global Step {}!".format(global_step))
-                model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
+                model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
             while global_step < max_iterations:
                 global_step, dice_val_best, global_step_best, dice_val_list_best = train(
-                    global_step, train_loader, dice_val_best, global_step_best, dice_val_list_best
+                    global_step, train_loader, dice_val_best, global_step_best, dice_val_list_best, model_save_prefix
                 )
 
             # Evaluation
-            model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
+            model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
             # calculate all metrics
             epoch_iterator_val = tqdm(
                 val_loader, desc="Validate (X / X Steps) (dice=X.X) (prec=X.X) (rec=X.X) (hsd=X.X)", dynamic_ncols=True
@@ -601,11 +609,11 @@ if __name__ == '__main__':
             mean_dice_val, mean_precision_val, mean_recall_val, mean_hsd_val = validation_all_metrics(
                 epoch_iterator_val)  # list of aggregate -> per class
             # save dice and loss from all steps and all final metrics
-            np.save(os.path.join(root_dir, "loss"), epoch_loss_values)
-            np.save(os.path.join(root_dir, "dice_values_list"), dice_values_list)
-            np.save(os.path.join(root_dir, "precision_values"), mean_precision_val)
-            np.save(os.path.join(root_dir, "recall_values"), mean_recall_val)
-            np.save(os.path.join(root_dir, "hsd_values"), mean_hsd_val)
+            np.save(os.path.join(root_dir, model_save_prefix + "_loss"), epoch_loss_values)
+            np.save(os.path.join(root_dir, model_save_prefix + "_dice_values_list"), dice_values_list)
+            np.save(os.path.join(root_dir, model_save_prefix + "_precision_values"), mean_precision_val)
+            np.save(os.path.join(root_dir, model_save_prefix + "_recall_values"), mean_recall_val)
+            np.save(os.path.join(root_dir, model_save_prefix + "_hsd_values"), mean_hsd_val)
             print(
                 "train completed, best dice: {} ".format(dice_val_best) +
                 "per class: {} ".format(dice_val_list_best) +
@@ -629,17 +637,17 @@ if __name__ == '__main__':
             y = np.array(dice_values_list)[:, 0]
             plt.xlabel("Iteration")
             plt.plot(x, y)
-            plt.savefig(os.path.join(root_dir, "train_val.png"))
+            plt.savefig(os.path.join(root_dir, model_save_prefix + "_train_val.png"))
 
         # Example visualization
         if fold_idx > 0:
             continue
-        model.load_state_dict(torch.load(os.path.join(root_dir, "best_metric_model.pth")))
+        model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
         model.eval()
-        final_dice = np.load(os.path.join(root_dir, "dice_values_list.npy"))[-1]
-        final_precision = np.load(os.path.join(root_dir, "precision_values.npy"))
-        final_recall = np.load(os.path.join(root_dir, "recall_values.npy"))
-        final_hsd = np.load(os.path.join(root_dir, "hsd_values.npy"))
+        final_dice = np.load(os.path.join(root_dir, model_save_prefix + "_dice_values_list.npy"))[-1]
+        final_precision = np.load(os.path.join(root_dir, model_save_prefix + "_precision_values.npy"))
+        final_recall = np.load(os.path.join(root_dir, model_save_prefix + "_recall_values.npy"))
+        final_hsd = np.load(os.path.join(root_dir, model_save_prefix + "_hsd_values.npy"))
         print(
             "best average dice and per class: {} ".format(final_dice) +
             "best average precision and per class: {} ".format(final_precision) +
@@ -678,7 +686,7 @@ if __name__ == '__main__':
                     plt.imshow(val_inputs[0, :, :, slice_num].detach().cpu(), 'gray', interpolation='none')
                     plt.imshow(val_output[0, :, :, slice_num], 'magma', interpolation='none', alpha=0.5)
                     plt.tick_params(which='both', bottom=False, left=False, labelbottom=False, labelleft=False)
-                    plt.savefig(os.path.join(root_dir, "example_{}_{}.pdf".format(img_name, slice_num)))
+                    plt.savefig(os.path.join(root_dir, model_save_prefix + "_example_{}_{}.pdf".format(img_name, slice_num)))
                     vis_count += 1
                     break
                 if vis_count > no_of_vis:
