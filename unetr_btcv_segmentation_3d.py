@@ -552,7 +552,6 @@ if __name__ == '__main__':
             os.mkdir(root_dir)
         print("Root directory is {}".format(root_dir))
         model_save_prefix = "lr_{}_train_size_{}".format(args.learning_rate, train_size)
-        logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
 
         # current fold
         val_ds = cvdataset.get_dataset(folds=fold_idx)
@@ -596,10 +595,12 @@ if __name__ == '__main__':
                 print("Loading Model Saved At Global Step {}!".format(global_step))
                 model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
             while global_step < max_iterations:
+                logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
                 global_step, dice_val_best, global_step_best, dice_val_list_best = train(
                     global_step, train_loader, dice_val_best, global_step_best, dice_val_list_best, model_save_prefix
                 )
-
+                logger_file.close()
+                
             # Evaluation
             model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
             # calculate all metrics
@@ -619,9 +620,11 @@ if __name__ == '__main__':
                 "per class: {} ".format(dice_val_list_best) +
                 "at iteration: {}".format(global_step_best)
             )
+            logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
             logger_file.write("train completed, best dice: {} ".format(dice_val_best) +
                 "per class: {} ".format(dice_val_list_best) +
                 "at iteration: {}\n".format(global_step_best))
+            logger_file.close()
 
             # Performance visualization
             plt.figure("train", (12, 6))

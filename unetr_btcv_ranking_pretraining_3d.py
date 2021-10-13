@@ -466,7 +466,6 @@ if __name__ == '__main__':
     cos = CosineSimilarity(dim=-1, eps=1e-6)
 
     # Training
-    max_iterations = 10000
     eval_num = 25
     rtol = 1e-2
 
@@ -502,21 +501,24 @@ if __name__ == '__main__':
 
         # update features
         params_conv = False
+        max_iterations = 250
         global_step = 0
         epoch_ranking_loss_values = []
         epoch_time_values = []
         update_arc = "feat"
         model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
-        logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
         # checkpoint if exists
         if os.path.exists(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")):
-            global_step = 0
             print(
                 "Loading Model Saved At Global Step {} for {}!".format(global_step, update_arc)
             )
             model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
+            max_iterations -= global_step
+            global_step = 0
         while not params_conv:
+            logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
             global_step = train(global_step, train_loader, update_arc, model_save_prefix)
+            logger_file.close()
             if global_step <= eval_num:
                 avg_obj = np.mean(epoch_ranking_loss_values[:-1])
             else:
@@ -526,7 +528,9 @@ if __name__ == '__main__':
         print(
             "Training Converged At Global Step {} for {}!".format(global_step, update_arc)
         )
+        logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
         logger_file.write("Training Converged At Global Step {} for {} \n!".format(global_step, update_arc))
+        logger_file.close()
 
         # Evaluation
         model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
@@ -541,21 +545,24 @@ if __name__ == '__main__':
 
         # update reconstructions, freezing encoder
         params_conv = False
+        max_iterations = 250
         global_step = 0
         epoch_ranking_loss_values = []
         epoch_time_values = []
         update_arc = "recon"
         model_save_prefix = "{}_lr_{}_temp_{}".format(update_arc, learning_rate, temperature)
-        logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
         # checkpoint if exists
         if os.path.exists(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")):
-            global_step = 0
             print(
                 "Loading Model Saved At Global Step {} for {}!".format(global_step, update_arc)
             )
             model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
+            max_iterations -= global_step
+            global_step = 0
         while not params_conv:
+            logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
             global_step = train(global_step, train_loader, update_arc, model_save_prefix)
+            logger_file.close()
             if global_step <= eval_num:
                 avg_obj = np.mean(epoch_ranking_loss_values[:-1])
             else:
@@ -565,7 +572,9 @@ if __name__ == '__main__':
         print(
             "Training Converged At Global Step {} for {}!".format(global_step, update_arc)
         )
+        logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
         logger_file.write("Training Converged At Global Step {} for {} \n!".format(global_step, update_arc))
+        logger_file.close()
 
         # Evaluation
         model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
