@@ -299,6 +299,7 @@ def train(global_step, train_loader, update_arc, model_save_prefix):
 if __name__ == '__main__':
     """
     python unetr_btcv_ranking_pretraining_3d.py "./dataset" "Task01_BrainTumour" "./results" 4 0.0001 0.1 "ranking"
+    python unetr_btcv_ranking_pretraining_3d.py "./dataset" "Task02_Heart" "./results" 2 0.0001 0.1 "ranking"
     python unetr_btcv_ranking_pretraining_3d.py "./dataset" "Task09_Spleen" "./results" 2 0.0001 0.1 "ranking"
     python unetr_btcv_ranking_pretraining_3d.py "./dataset" "abdomenCT" "./results" 14 0.0001 0.1 "ranking"
     """
@@ -333,7 +334,7 @@ if __name__ == '__main__':
     if "Task01" in dataset_name:
         crop_size = 128
         add_input_channel = False
-    elif "Task09" in dataset_name:
+    elif "Task09" in dataset_name or "Task02" in dataset_name:
         crop_size = 96
         add_input_channel = True
     else:
@@ -466,7 +467,7 @@ if __name__ == '__main__':
     cos = CosineSimilarity(dim=-1, eps=1e-6)
 
     # Training
-    eval_num = 25
+    eval_num = 10
     rtol = 1e-2
 
     # CROSS VALIDATION: load dataset and split

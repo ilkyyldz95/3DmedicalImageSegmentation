@@ -56,7 +56,7 @@ import argparse
 >>> images = os.listdir("imagesTr")
 >>> images.sort()
 >>> json_dict["training"] = []
->>> for i in range(50):
+>>> for i in range(len(images)):
     json_dict["training"].append({"image": "imagesTr/"+images[i], "label": "labelsTr/" + labels[i]})
 ds = Dataset(json_dict)
 - image size as crop_size / ROI, may resize to this default shape
@@ -270,6 +270,7 @@ def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_l
 if __name__ == '__main__':
     """
     python unetr_btcv_segmentation_3d.py "./dataset" "Task01_BrainTumour" "./results_segmentation" 4 "./results_ranking/Task01_BrainTumour_0/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 1e6 0.0001
+    python unetr_btcv_segmentation_3d.py "./dataset" "Task02_Heart" "./results_segmentation" 2 "./results_ranking/Task02_Heart_0/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 1e6 0.0001
     python unetr_btcv_segmentation_3d.py "./dataset" "Task09_Spleen" "./results_segmentation" 2 "./results_ranking/Task09_Spleen_0/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 1e6 0.0001
     python unetr_btcv_segmentation_3d.py "./dataset" "abdomenCT" "./results_segmentation" 14 "./results_ranking/abdomenCT/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 1e6 0.0001
     """
@@ -307,7 +308,7 @@ if __name__ == '__main__':
     if "Task01" in dataset_name:
         crop_size = 128
         add_input_channel = False
-    elif "Task09" in dataset_name:
+    elif "Task09" in dataset_name or "Task02" in dataset_name:
         crop_size = 96
         add_input_channel = True
     else:
@@ -402,20 +403,6 @@ if __name__ == '__main__':
         # Metrics
         post_label = AsDiscrete(to_onehot=True, n_classes=n_classes)
         post_pred = AsDiscrete(argmax=True, to_onehot=True, n_classes=n_classes)
-        """
-        dice_metric = DiceMetric(include_background=False, reduction="mean", get_not_nans=False)
-        dice_metric_batch = DiceMetric(include_background=False, reduction="mean_batch", get_not_nans=False)
-        precision_metric = ConfusionMatrixMetric(include_background=False, reduction="mean", get_not_nans=False,
-                                          metric_name="precision")
-        precision_metric_batch = ConfusionMatrixMetric(include_background=False, reduction="mean_batch", get_not_nans=False,
-                                                metric_name="precision")
-        recall_metric = ConfusionMatrixMetric(include_background=False, reduction="mean", get_not_nans=False,
-                                          metric_name="sensitivity")
-        recall_metric_batch = ConfusionMatrixMetric(include_background=False, reduction="mean_batch", get_not_nans=False,
-                                                metric_name="sensitivity")
-        hsd_metric = HausdorffDistanceMetric(include_background=False, reduction="mean", get_not_nans=False)
-        hsd_metric_batch = HausdorffDistanceMetric(include_background=False, reduction="mean_batch", get_not_nans=False)
-        """
     else:  # 4D image, MR, multi-class segmentation
         train_transforms = Compose(
             [
