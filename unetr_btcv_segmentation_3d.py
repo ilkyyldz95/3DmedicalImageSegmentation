@@ -50,9 +50,6 @@ import argparse
 - keys for image and label
 >>> labels = os.listdir("labelsTr")
 >>> labels.sort()
->>> labels = os.listdir("imagesTr")
->>> labels = os.listdir("labelsTr")
->>> labels.sort()
 >>> images = os.listdir("imagesTr")
 >>> images.sort()
 >>> json_dict["training"] = []

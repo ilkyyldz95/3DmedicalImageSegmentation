@@ -47,29 +47,28 @@ import torch
 import argparse
 
 """
+data_dir = "/ifs/loni/faculty/dduncan/rgarner/shared/epibios/human/data/ncs2021_abstract"
+label_sub_dir = "lesion_segmentations/Affine"
+image_sub_dir = "t2flair/Affine"
 - keys for image and label
-labels = os.listdir("labelsTr")
+labels = os.listdir(os.path.join(data_dir, label_sub_dir))
 labels.sort()
-labels = os.listdir("imagesTr")
-labels = os.listdir("labelsTr")
-labels.sort()
-images = os.listdir("imagesTr")
+images = os.listdir(os.path.join(data_dir, image_sub_dir))
 images.sort()
-print(len(images))
-n_train = int(len(images))
+n_train = int(len(labels)*0.8)
 json_dict["training"] = []
 for i in range(n_train):
-    json_dict["training"].append({"image": "imagesTr/"+images[i], "label": "labelsTr/" + labels[i]})
+    json_dict["training"].append({"image": os.path.join(image_sub_dir, images[i]), "label": os.path.join(label_sub_dir, labels[i])})
 json_dict["validation"] = []
-for i in np.arange(n_train, len(images)):
-    json_dict["validation"].append({"image": "imagesTr/"+images[i], "label": "labelsTr/" + labels[i]})
+for i in np.arange(n_train, len(labels)):
+    json_dict["validation"].append({"image": os.path.join(image_sub_dir, images[i]), "label": os.path.join(label_sub_dir, labels[i])})
 - save json as dataset_0.json to the same path as images and labels
 
 - image size as crop_size / ROI, may resize to this default shape
 image shape: torch.Size([n_img_channels, img_dim_x, img_dim_y, img_dim_z])
 label shape: torch.Size([n_seg_classes, img_dim_x, img_dim_y, img_dim_z])
 n_seg_classes = 2 (edema / tumor core)
-n_img_channels, img_dim_x, img_dim_y, img_dim_z = 1, 91, 109, 91
+n_img_channels, img_dim_x, img_dim_y, img_dim_z = 1, 182, 218, 182
 """
 def validation(epoch_iterator_val):
     model.eval()
@@ -237,12 +236,12 @@ def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_l
 
 if __name__ == '__main__':
     """
-    python unetr_btcv_segmentation_3d.py "./dataset" "./results_t2_lesion_segmentation" 3 "train" 0.0001
+    python unetr_t2_lesion_segmentation_3d.py "./dataset/t2_lesion_segmentation" "./results_segmentation/t2_lesion_segmentation" 2 "train" 0.0001
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument('data_dir', type=str, default="./dataset")
-    parser.add_argument('root_dir', type=str, default="./results_t2_lesion_segmentation")
-    parser.add_argument('n_classes', type=int, default=3)
+    parser.add_argument('data_dir', type=str, default="")
+    parser.add_argument('root_dir', type=str, default="./results_segmentation/t2_lesion_segmentation")
+    parser.add_argument('n_classes', type=int, default=2)
     parser.add_argument('mode', type=str, default="train")
     parser.add_argument('learning_rate', type=float, default=0.0001)
     args = parser.parse_args()
@@ -258,7 +257,7 @@ if __name__ == '__main__':
     print("Root directory is {}".format(root_dir))
 
     # Crop size and input channel size
-    crop_size = 64
+    crop_size = 48
     in_channel_size = 1
 
     # Data transforms, 3D image
@@ -272,14 +271,7 @@ if __name__ == '__main__':
                 mode=("bilinear", "nearest"),
             ),
             Orientationd(keys=["image", "label"], axcodes="RAS"),
-            ScaleIntensityRanged(
-                keys=["image"],
-                a_min=-175,
-                a_max=250,
-                b_min=0.0,
-                b_max=1.0,
-                clip=True,
-            ),
+            NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
             CropForegroundd(keys=["image", "label"], source_key="image"),
             RandCropByPosNegLabeld(
                 keys=["image", "label"],
@@ -329,14 +321,7 @@ if __name__ == '__main__':
                 mode=("bilinear", "nearest"),
             ),
             Orientationd(keys=["image", "label"], axcodes="RAS"),
-            ScaleIntensityRanged(
-                keys=["image"],
-                a_min=-175,
-                a_max=250,
-                b_min=0.0,
-                b_max=1.0,
-                clip=True,
-            ),
+            NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
             CropForegroundd(keys=["image", "label"], source_key="image"),
             ToTensord(keys=["image", "label"]),
         ]
@@ -382,15 +367,12 @@ if __name__ == '__main__':
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-5)
 
     # Data loader
-    split_JSON = "dataset_0.json"
-    datasets = data_dir + split_JSON
+    split_JSON = "dataset_0_bin.json"
+    datasets = os.path.join(data_dir, split_JSON)
     datalist = load_decathlon_datalist(datasets, True, "training")
     val_files = load_decathlon_datalist(datasets, True, "validation")
     train_ds = CacheDataset(
-        data=datalist,
-        transform=train_transforms,
-        cache_rate=1.0,
-        num_workers=8,
+        data=datalist, transform=train_transforms, cache_rate=1.0, num_workers=8,
     )
     val_ds = CacheDataset(
         data=val_files, transform=val_transforms, cache_rate=1.0, num_workers=4
@@ -409,8 +391,8 @@ if __name__ == '__main__':
         section="validation",
         download=False)
     """
-    train_loader = DataLoader(train_ds, batch_size=2, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=2, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=4, pin_memory=True)
 
     print("Val dataset length: ", len(val_ds))
     print("Train dataset length: ", len(train_ds))
@@ -419,13 +401,32 @@ if __name__ == '__main__':
     img_shape = img.shape
     label_shape = label.shape
     print(f"image shape: {img_shape}, label shape: {label_shape}")
+    print("Unique labels", np.unique(label.cpu().numpy()))
+
+    for case_num in range(len(val_ds)):
+        val_inputs = val_ds[case_num]["image"]
+        img_name = os.path.split(val_ds[case_num]["image_meta_dict"]["filename_or_obj"])[1]
+        val_label = val_ds[case_num]["label"]
+        for slice_num in range(val_inputs.shape[-1]):
+            n_classes_per_slice = len(np.unique(val_label[0, :, :, slice_num].numpy()))
+            if n_classes_per_slice < n_classes:
+                continue
+            plt.figure("example_input_{}_{}".format(img_name, slice_num), (18, 6))
+            plt.subplot(1, 2, 1)
+            plt.title("image")
+            plt.imshow(val_inputs[0, :, :, slice_num].detach().cpu(), cmap="gray")
+            plt.subplot(1, 2, 2)
+            plt.title("label")
+            plt.imshow(val_label[0, :, :, slice_num].detach().cpu())
+            plt.savefig(os.path.join(root_dir, "example_input_{}_{}.pdf".format(img_name, slice_num)))
+            break
 
     # Training
     model_save_prefix = "lr_{}".format(args.learning_rate)
     if mode == "train":
         global_step = 0
         max_iterations = 25000
-        eval_num = 500
+        eval_num = 50
 
         dice_val_best = 0.0
         dice_val_list_best = 0.0
@@ -498,8 +499,6 @@ if __name__ == '__main__':
         "best average hsd and per class: {} ".format(final_hsd)
     )
     # Visualize
-    vis_count = 0
-    no_of_vis = 15
     with torch.no_grad():
         for case_num in range(len(val_ds)):
             val_inputs = val_ds[case_num]["image"].to(device)
@@ -527,7 +526,4 @@ if __name__ == '__main__':
                 plt.imshow(val_output[0, :, :, slice_num], 'magma', interpolation='none', alpha=0.5)
                 plt.tick_params(which='both', bottom=False, left=False, labelbottom=False, labelleft=False)
                 plt.savefig(os.path.join(root_dir, model_save_prefix + "_example_{}_{}.pdf".format(img_name, slice_num)))
-                vis_count += 1
-                break
-            if vis_count > no_of_vis:
                 break
