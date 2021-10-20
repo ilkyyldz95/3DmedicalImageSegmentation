@@ -595,7 +595,7 @@ if __name__ == '__main__':
                 epoch_iterator_val)  # list of aggregate -> per class
             # save dice and loss from all steps and all final metrics
             np.save(os.path.join(root_dir, model_save_prefix + "_loss"), epoch_loss_values)
-            np.save(os.path.join(root_dir, model_save_prefix + "_dice_values_list"), dice_values_list)
+            np.save(os.path.join(root_dir, model_save_prefix + "_dice_values_list"), mean_dice_val)
             np.save(os.path.join(root_dir, model_save_prefix + "_precision_values"), mean_precision_val)
             np.save(os.path.join(root_dir, model_save_prefix + "_recall_values"), mean_recall_val)
             np.save(os.path.join(root_dir, model_save_prefix + "_hsd_values"), mean_hsd_val)
@@ -631,7 +631,7 @@ if __name__ == '__main__':
             continue
         model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
         model.eval()
-        final_dice = np.load(os.path.join(root_dir, model_save_prefix + "_dice_values_list.npy"))[-1]
+        final_dice = np.load(os.path.join(root_dir, model_save_prefix + "_dice_values_list.npy"))
         final_precision = np.load(os.path.join(root_dir, model_save_prefix + "_precision_values.npy"))
         final_recall = np.load(os.path.join(root_dir, model_save_prefix + "_recall_values.npy"))
         final_hsd = np.load(os.path.join(root_dir, model_save_prefix + "_hsd_values.npy"))

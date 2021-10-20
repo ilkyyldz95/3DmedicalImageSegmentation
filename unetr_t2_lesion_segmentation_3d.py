@@ -33,7 +33,7 @@ from monai.transforms import (
 
 from monai.config import print_config
 from monai.metrics import DiceMetric, HausdorffDistanceMetric, ConfusionMatrixMetric
-from monai.networks.nets import UNETR
+from monai.networks.nets import UNETR, SegResNet, UNet
 from monai.apps import DecathlonDataset, CrossValidation
 
 from monai.data import (
@@ -236,13 +236,14 @@ def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_l
 
 if __name__ == '__main__':
     """
-    python unetr_t2_lesion_segmentation_3d.py "./dataset/t2_lesion_segmentation" "./results_segmentation/t2_lesion_segmentation" 2 "train" 0.0001
+    python unetr_t2_lesion_segmentation_3d.py "./dataset/t2_lesion_segmentation" "./results_segmentation/t2_lesion_segmentation" 2 "train" "unetr" 0.001
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('data_dir', type=str, default="")
     parser.add_argument('root_dir', type=str, default="./results_segmentation/t2_lesion_segmentation")
     parser.add_argument('n_classes', type=int, default=2)
     parser.add_argument('mode', type=str, default="train")
+    parser.add_argument('architecture', type=str, default="unetr")
     parser.add_argument('learning_rate', type=float, default=0.0001)
     args = parser.parse_args()
 
@@ -348,19 +349,38 @@ if __name__ == '__main__':
     # Architecture
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = UNETR(
-        in_channels=in_channel_size,
-        out_channels=n_classes,
-        img_size=(crop_size, crop_size, crop_size),
-        feature_size=16,
-        hidden_size=768,
-        mlp_dim=3072,
-        num_heads=12,
-        pos_embed="perceptron",
-        norm_name="instance",
-        res_block=True,
-        dropout_rate=0.0,
-    ).to(device)
+    if args.architecture == "unet":
+        model = UNet(
+            dimensions=3,
+            in_channels=in_channel_size,
+            out_channels=n_classes,
+            channels=(16, 32, 64, 128, 256),
+            strides=(2, 2, 2, 2),
+            num_res_units=2,
+        ).to(device)
+    elif args.architecture == "segresnet":
+        model = SegResNet(
+            blocks_down=[1, 2, 2, 4],
+            blocks_up=[1, 1, 1],
+            init_filters=16,
+            in_channels=in_channel_size,
+            out_channels=n_classes,
+            dropout_prob=0.2,
+        ).to(device)
+    else:
+        model = UNETR(
+            in_channels=in_channel_size,
+            out_channels=n_classes,
+            img_size=(crop_size, crop_size, crop_size),
+            feature_size=16,
+            hidden_size=768,
+            mlp_dim=3072,
+            num_heads=12,
+            pos_embed="perceptron",
+            norm_name="instance",
+            res_block=True,
+            dropout_rate=0.0,
+        ).to(device)
 
     # Optimizer
     torch.backends.cudnn.benchmark = True
@@ -377,20 +397,6 @@ if __name__ == '__main__':
     val_ds = CacheDataset(
         data=val_files, transform=val_transforms, cache_rate=1.0, num_workers=4
     )
-    """
-    train_ds = DecathlonDataset(
-        root_dir=data_dir,
-        task="t2_lesion_segmentation",
-        transform=train_transform,
-        section="training",
-        download=False)
-    val_ds = DecathlonDataset(
-        root_dir=data_dir,
-        task="t2_lesion_segmentation",
-        transform=val_transform,
-        section="validation",
-        download=False)
-    """
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=4, pin_memory=True)
 
@@ -408,21 +414,27 @@ if __name__ == '__main__':
         img_name = os.path.split(val_ds[case_num]["image_meta_dict"]["filename_or_obj"])[1]
         val_label = val_ds[case_num]["label"]
         for slice_num in range(val_inputs.shape[-1]):
-            n_classes_per_slice = len(np.unique(val_label[0, :, :, slice_num].numpy()))
-            if n_classes_per_slice < n_classes:
+            unique_classes, counts = np.unique(val_label[0, :, :, slice_num].numpy(), return_counts=True)
+            if len(unique_classes) < n_classes:
+                continue
+            class_ratio = counts[1] / counts[0]
+            # Plot only if the ground-truth is large enough
+            if class_ratio < 0.05:
                 continue
             plt.figure("example_input_{}_{}".format(img_name, slice_num), (18, 6))
             plt.subplot(1, 2, 1)
             plt.title("image")
             plt.imshow(val_inputs[0, :, :, slice_num].detach().cpu(), cmap="gray")
             plt.subplot(1, 2, 2)
-            plt.title("label")
-            plt.imshow(val_label[0, :, :, slice_num].detach().cpu())
+            plt.title("with label")
+            plt.imshow(val_inputs[0, :, :, slice_num].detach().cpu(), 'gray', interpolation='none')
+            plt.imshow(val_label[0, :, :, slice_num], 'magma', interpolation='none', alpha=0.5)
+            plt.tick_params(which='both', bottom=False, left=False, labelbottom=False, labelleft=False)
             plt.savefig(os.path.join(root_dir, "example_input_{}_{}.pdf".format(img_name, slice_num)))
             break
 
     # Training
-    model_save_prefix = "lr_{}".format(args.learning_rate)
+    model_save_prefix = "lr_{}_arch_{}".format(args.learning_rate, args.architecture)
     if mode == "train":
         global_step = 0
         max_iterations = 25000
@@ -454,7 +466,7 @@ if __name__ == '__main__':
             epoch_iterator_val)  # list of aggregate -> per class
         # save dice and loss from all steps and all final metrics
         np.save(os.path.join(root_dir, model_save_prefix + "_loss"), epoch_loss_values)
-        np.save(os.path.join(root_dir, model_save_prefix + "_dice_values_list"), dice_values_list)
+        np.save(os.path.join(root_dir, model_save_prefix + "_dice_values_list"), mean_dice_val)
         np.save(os.path.join(root_dir, model_save_prefix + "_precision_values"), mean_precision_val)
         np.save(os.path.join(root_dir, model_save_prefix + "_recall_values"), mean_recall_val)
         np.save(os.path.join(root_dir, model_save_prefix + "_hsd_values"), mean_hsd_val)
@@ -488,7 +500,7 @@ if __name__ == '__main__':
     # Example visualization
     model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
     model.eval()
-    final_dice = np.load(os.path.join(root_dir, model_save_prefix + "_dice_values_list.npy"))[-1]
+    final_dice = np.load(os.path.join(root_dir, model_save_prefix + "_dice_values_list.npy"))
     final_precision = np.load(os.path.join(root_dir, model_save_prefix + "_precision_values.npy"))
     final_recall = np.load(os.path.join(root_dir, model_save_prefix + "_recall_values.npy"))
     final_hsd = np.load(os.path.join(root_dir, model_save_prefix + "_hsd_values.npy"))
@@ -508,11 +520,19 @@ if __name__ == '__main__':
             val_output = post_pred(val_outputs[0]).cpu()
             val_label = val_ds[case_num]["label"]
             for slice_num in range(val_inputs.shape[-1]):
-                n_classes_per_slice = len(np.unique(val_label[0, :, :, slice_num].numpy()))
-                if n_classes_per_slice < n_classes:
+                unique_classes, counts = np.unique(val_label[0, :, :, slice_num].numpy(), return_counts=True)
+                if len(unique_classes) < n_classes:
                     continue
-                n_classes_per_slice = len(np.unique(val_output[0, :, :, slice_num].numpy()))
-                if n_classes_per_slice < n_classes:
+                class_ratio = counts[1] / counts[0]
+                # Plot only if the ground-truth is large enough
+                if class_ratio < 0.05:
+                    continue
+                unique_classes, counts = np.unique(val_output[0, :, :, slice_num].numpy(), return_counts=True)
+                if len(unique_classes) < n_classes:
+                    continue
+                class_ratio = counts[1] / counts[0]
+                # Plot only if the ground-truth is large enough
+                if class_ratio < 0.05:
                     continue
                 plt.figure("example_{}_{}".format(img_name, slice_num), (18, 6))
                 plt.subplot(1, 2, 1)
@@ -523,7 +543,8 @@ if __name__ == '__main__':
                 plt.subplot(1, 2, 2)
                 plt.title("prediction")
                 plt.imshow(val_inputs[0, :, :, slice_num].detach().cpu(), 'gray', interpolation='none')
-                plt.imshow(val_output[0, :, :, slice_num], 'magma', interpolation='none', alpha=0.5)
+                # to make the segment colored, negate sign
+                plt.imshow(1 - val_output[0, :, :, slice_num], 'magma', interpolation='none', alpha=0.5)
                 plt.tick_params(which='both', bottom=False, left=False, labelbottom=False, labelleft=False)
                 plt.savefig(os.path.join(root_dir, model_save_prefix + "_example_{}_{}.pdf".format(img_name, slice_num)))
                 break
