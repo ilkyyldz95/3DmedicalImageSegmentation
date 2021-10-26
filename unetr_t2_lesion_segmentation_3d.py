@@ -548,3 +548,32 @@ if __name__ == '__main__':
                 plt.tick_params(which='both', bottom=False, left=False, labelbottom=False, labelleft=False)
                 plt.savefig(os.path.join(root_dir, model_save_prefix + "_example_{}_{}.pdf".format(img_name, slice_num)))
                 break
+            for slice_num in range(val_inputs.shape[-1]):
+                unique_classes, counts = np.unique(val_label[0, :, :, slice_num].numpy(), return_counts=True)
+                if len(unique_classes) < n_classes:
+                    continue
+                class_ratio = counts[1] / counts[0]
+                # Plot only if the ground-truth is large enough
+                if class_ratio > 0.01:
+                    continue
+                unique_classes, counts = np.unique(val_output[0, :, :, slice_num].numpy(), return_counts=True)
+                if len(unique_classes) < n_classes:
+                    continue
+                #class_ratio = counts[1] / counts[0]
+                # Plot only if the ground-truth is large enough
+                #if class_ratio > 0.01:
+                #    continue
+                plt.figure("bad_example_{}_{}".format(img_name, slice_num), (18, 6))
+                plt.subplot(1, 2, 1)
+                plt.title("label")
+                plt.imshow(val_inputs[0, :, :, slice_num].detach().cpu(), 'gray', interpolation='none')
+                plt.imshow(val_label[0, :, :, slice_num], 'magma', interpolation='none', alpha=0.5)
+                plt.tick_params(which='both', bottom=False, left=False, labelbottom=False, labelleft=False)
+                plt.subplot(1, 2, 2)
+                plt.title("prediction")
+                plt.imshow(val_inputs[0, :, :, slice_num].detach().cpu(), 'gray', interpolation='none')
+                # to make the segment colored, negate sign
+                plt.imshow(1 - val_output[0, :, :, slice_num], 'magma', interpolation='none', alpha=0.5)
+                plt.tick_params(which='both', bottom=False, left=False, labelbottom=False, labelleft=False)
+                plt.savefig(os.path.join(root_dir, model_save_prefix + "_bad_example_{}_{}.pdf".format(img_name, slice_num)))
+                break
