@@ -42,7 +42,7 @@ from monai.data import (
     load_decathlon_datalist,
     decollate_batch,
 )
-
+from sklearn.model_selection import KFold
 import torch
 import argparse
 
@@ -269,7 +269,7 @@ if __name__ == '__main__':
     python unetr_btcv_segmentation_3d.py "./dataset" "Task01_BrainTumour" "./results_segmentation" 4 "./results_ranking/Task01_BrainTumour_0/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 1e6 0.0001
     python unetr_btcv_segmentation_3d.py "./dataset" "Task02_Heart" "./results_segmentation" 2 "./results_ranking/Task02_Heart_0/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 1e6 0.0001
     python unetr_btcv_segmentation_3d.py "./dataset" "Task09_Spleen" "./results_segmentation" 2 "./results_ranking/Task09_Spleen_0/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 1e6 0.0001
-    python unetr_btcv_segmentation_3d.py "./dataset" "abdomenCT" "./results_segmentation" 14 "./results_ranking/abdomenCT/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 1e6 0.0001
+    python unetr_btcv_segmentation_3d.py "./dataset" "abdomenCT" "./results_segmentation" 14 "./results_ranking/abdomenCT_0/recon_lr_0.0001_temp_0.1_best_metric_model.pth" "train" 1e6 0.0001
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('data_dir', type=str, default="./dataset")
@@ -397,7 +397,6 @@ if __name__ == '__main__':
 
         # Loss
         loss_function = DiceCELoss(to_onehot_y=True, softmax=True)
-        # Metrics
         post_label = AsDiscrete(to_onehot=True, n_classes=n_classes)
         post_pred = AsDiscrete(argmax=True, to_onehot=True, n_classes=n_classes)
     else:  # 4D image, MR, multi-class segmentation
@@ -474,10 +473,10 @@ if __name__ == '__main__':
 
         # Loss
         loss_function = DiceCELoss(to_onehot_y=False, sigmoid=True)
-        # Metrics
         post_label = AsDiscrete(to_onehot=False, n_classes=n_classes)
         post_pred = Compose([Activations(sigmoid=True), AsDiscrete(threshold_values=True)])
 
+    # Metrics
     dice_metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False)
     dice_metric_batch = DiceMetric(include_background=True, reduction="mean_batch", get_not_nans=False)
     precision_metric = ConfusionMatrixMetric(include_background=True, reduction="mean", get_not_nans=False,
@@ -518,17 +517,42 @@ if __name__ == '__main__':
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-5)
 
     # CROSS VALIDATION: load dataset and split
-    cvdataset = CrossValidation(
-        dataset_cls=DecathlonDataset,
-        nfolds=n_fold,
-        seed=12345,
-        root_dir=data_dir,
-        task=dataset_name,
-        section="training",
-        download=False,
-        cache_rate=0.0,
-        num_workers=4,
-    )
+    if "Task" in dataset_name:
+        cvdataset = CrossValidation(
+            dataset_cls=DecathlonDataset,
+            nfolds=n_fold,
+            seed=12345,
+            root_dir=data_dir,
+            task=dataset_name,
+            section="training",
+            download=False,
+            cache_rate=0.0,
+            num_workers=4,
+        )
+    else:
+        # Prepare dataset with respect to Medical Segmentation Decathlon format
+        # Inside data_dir, create folder dataset_name
+        # Put nifti images in data_dir/dataset_name/imagesTr
+        # Put labels in data_dir/dataset_name/labelsTr
+        # Make JSON file data_dir/dataset_name/dataset.json with the following format:
+        # "training" key holds a list of values, in which each value is a dictionary of the form:
+        #     {"image": "imagesTr/img0001.nii.gz", "label": "labelsTr/label0001.nii.gz"}
+        cvdataset = None
+        split_JSON = "dataset.json"
+        datasets = os.path.join(data_dir, dataset_name, split_JSON)
+        datalist = load_decathlon_datalist(datasets, True, "training")
+        kf = KFold(n_splits=n_fold)
+        kf.get_n_splits(range(len(datalist)))
+        train_ds_list = []
+        val_ds_list = []
+        for train_index, test_index in kf.split(range(len(datalist))):
+            train_ds = CacheDataset(data=[datalist[idx] for idx in range(len(datalist)) if idx in train_index],
+                                    transform=train_transforms, cache_rate=0.0, num_workers=4)
+            val_ds = CacheDataset(data=[datalist[idx] for idx in range(len(datalist)) if idx in test_index],
+                                  transform=val_transforms, cache_rate=0.0, num_workers=4)
+            train_ds_list.append(train_ds)
+            val_ds_list.append(val_ds)
+
     for fold_idx in range(n_fold):
         # make root directory if does not exist
         root_dir += "_" + str(fold_idx)
@@ -538,15 +562,19 @@ if __name__ == '__main__':
         model_save_prefix = "lr_{}_train_size_{}".format(args.learning_rate, train_size)
 
         # current fold
-        val_ds = cvdataset.get_dataset(folds=fold_idx)
-        print("Val dataset length: ", len(val_ds))
-        train_ds = cvdataset.get_dataset(folds=[fold_idx1
-                                        for fold_idx1 in range(n_fold) if fold_idx != fold_idx1])
+        if cvdataset:
+            val_ds = cvdataset.get_dataset(folds=fold_idx)
+            train_ds = cvdataset.get_dataset(folds=[fold_idx1 for fold_idx1 in range(n_fold) if fold_idx != fold_idx1])
+        else:
+            val_ds = val_ds_list[fold_idx]
+            train_ds = train_ds_list[fold_idx]
+
         # subsample
         if len(train_ds) < train_size:
             train_size = len(train_ds)
         train_ds.data = train_ds.data[:int(train_size)]
         print("Train dataset length: ", len(train_ds))
+        print("Val dataset length: ", len(val_ds))
 
         # Data loader
         train_ds.transform = train_transforms
@@ -641,6 +669,12 @@ if __name__ == '__main__':
             "best average recall and per class: {} ".format(final_recall) +
             "best average hsd and per class: {} ".format(final_hsd)
         )
+        logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
+        logger_file.write("best average dice and per class: {} ".format(final_dice) +
+            "best average precision and per class: {} ".format(final_precision) +
+            "best average recall and per class: {} ".format(final_recall) +
+            "best average hsd and per class: {} ".format(final_hsd))
+        logger_file.close()
         # Visualize
         vis_count = 0
         no_of_vis = 15

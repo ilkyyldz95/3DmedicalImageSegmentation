@@ -37,14 +37,14 @@ from unetr_btcv_segmentation_3d import ConvertToMultiChannelBasedOnBratsClassesd
 
 from monai.data import (
     DataLoader,
-    Dataset,
+    CacheDataset,
     load_decathlon_datalist,
     decollate_batch,
 )
 
 import warnings
 import torch
-#torch.autograd.set_detect_anomaly(True)
+from sklearn.model_selection import KFold
 from torch.nn import CosineSimilarity
 import argparse
 from itertools import product, permutations
@@ -471,17 +471,38 @@ if __name__ == '__main__':
     rtol = 1e-2
 
     # CROSS VALIDATION: load dataset and split
-    cvdataset = CrossValidation(
-        dataset_cls=DecathlonDataset,
-        nfolds=n_fold,
-        seed=12345,
-        root_dir=data_dir,
-        task=dataset_name,
-        section="training",
-        download=False,
-        cache_rate=0.0,
-        num_workers=4,
-    )
+    if "Task" in dataset_name:
+        cvdataset = CrossValidation(
+            dataset_cls=DecathlonDataset,
+            nfolds=n_fold,
+            seed=12345,
+            root_dir=data_dir,
+            task=dataset_name,
+            section="training",
+            download=False,
+            cache_rate=0.0,
+            num_workers=4,
+        )
+    else:
+        # Prepare dataset with respect to Medical Segmentation Decathlon format
+        # Inside data_dir, create folder dataset_name
+        # Put nifti images in data_dir/dataset_name/imagesTr
+        # Put labels in data_dir/dataset_name/labelsTr
+        # Make JSON file data_dir/dataset_name/dataset.json with the following format:
+        # "training" key holds a list of values, in which each value is a dictionary of the form:
+        #     {"image": "imagesTr/img0001.nii.gz", "label": "labelsTr/label0001.nii.gz"}
+        cvdataset = None
+        split_JSON = "dataset.json"
+        datasets = os.path.join(data_dir, dataset_name, split_JSON)
+        datalist = load_decathlon_datalist(datasets, True, "training")
+        kf = KFold(n_splits=n_fold)
+        kf.get_n_splits(range(len(datalist)))
+        train_ds_list = []
+        for train_index, _ in kf.split(range(len(datalist))):
+            train_ds = CacheDataset(data=[datalist[idx] for idx in range(len(datalist)) if idx in train_index],
+                                    transform=train_transforms, cache_rate=0.0, num_workers=4)
+            train_ds_list.append(train_ds)
+
     for fold_idx in range(n_fold):
         # make root directory if does not exist
         root_dir += "_" + str(fold_idx)
@@ -490,8 +511,10 @@ if __name__ == '__main__':
         print("Root directory is {}".format(root_dir))
 
         # current fold
-        train_ds = cvdataset.get_dataset(folds=[fold_idx1
-                                                for fold_idx1 in range(n_fold) if fold_idx != fold_idx1])
+        if cvdataset:
+            train_ds = cvdataset.get_dataset(folds=[fold_idx1 for fold_idx1 in range(n_fold) if fold_idx != fold_idx1])
+        else:
+            train_ds = train_ds_list[fold_idx]
         print("Train dataset length: ", len(train_ds))
 
         # Data loader
