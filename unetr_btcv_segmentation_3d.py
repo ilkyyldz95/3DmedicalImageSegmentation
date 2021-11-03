@@ -45,7 +45,7 @@ from monai.data import (
 from sklearn.model_selection import KFold
 import torch
 import argparse
-
+import time
 """
 - keys for image and label
 >>> labels = os.listdir("labelsTr")
@@ -208,13 +208,14 @@ def validation_all_metrics(epoch_iterator_val):
     mean_hsd_val = np.mean(hsd_vals, 0)
     return mean_dice_val, mean_precision_val, mean_recall_val, mean_hsd_val
 
-def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_list_best, model_save_prefix):
+def train(global_step, running_time, train_loader, dice_val_best, global_step_best, time_best, dice_val_list_best, model_save_prefix):
     model.train()
     epoch_loss = 0
     epoch_iterator = tqdm(
         train_loader, desc="Training (X / X Steps) (loss=X.X)", dynamic_ncols=True
     )
     for step, batch in enumerate(epoch_iterator):
+        start_time = time.time()
         step += 1
         x, y = (batch["image"].cuda(), batch["label"].cuda())
         logit_map = model(x)
@@ -223,6 +224,7 @@ def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_l
         epoch_loss += loss.item()
         optimizer.step()
         optimizer.zero_grad()
+        running_time += time.time() - start_time
         epoch_iterator.set_description(
             "Training (%d / %d Steps) (loss=%2.5f)" % (global_step, max_iterations, loss)
         )
@@ -241,17 +243,18 @@ def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_l
                 dice_val_best = dice_val
                 dice_val_list_best = metric[1:]
                 global_step_best = global_step
+                time_best = running_time
                 torch.save(
                     model.state_dict(), os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")
                 )
                 print(
-                    "Model Was Saved At Global Step {}! Current Best Avg. Dice: {} Current Avg. Dice: {} Per class: {}"
-                        .format(global_step, dice_val_best, dice_val, dice_val_list_best
+                    "Model Was Saved At Global Step {} and Time {}! Current Best Avg. Dice: {} Current Avg. Dice: {} Per class: {}"
+                        .format(global_step, running_time, dice_val_best, dice_val, dice_val_list_best
                     )
                 )
-                logger_file.write("Model Was Saved At Global Step {}! Current Best Avg. Dice: {} "
+                logger_file.write("Model Was Saved At Global Step {} and Time {}! Current Best Avg. Dice: {} "
                                   "Current Avg. Dice: {} Per class: {} \n"
-                                .format(global_step, dice_val_best, dice_val, dice_val_list_best))
+                                .format(global_step, running_time, dice_val_best, dice_val, dice_val_list_best))
             else:
                 print(
                     "Model Was Not Saved ! Current Best Avg. Dice: {} Current Avg. Dice: {} Per class: {}"
@@ -262,7 +265,7 @@ def train(global_step, train_loader, dice_val_best, global_step_best, dice_val_l
                                   "Current Avg. Dice: {} Per class: {} \n"
                                   .format(dice_val_best, dice_val, dice_val_list_best))
         global_step += 1
-    return global_step, dice_val_best, global_step_best, dice_val_list_best
+    return global_step, running_time, dice_val_best, global_step_best, time_best, dice_val_list_best
 
 if __name__ == '__main__':
     """
@@ -298,6 +301,8 @@ if __name__ == '__main__':
     elif "contrast" in args.pretrained:
         root_dir += "_pretrained_contrast"
     # add dataset name
+    if not os.path.isdir(root_dir):
+        os.mkdir(root_dir)
     print("Processing dataset", dataset_name)
     root_dir = os.path.join(root_dir, dataset_name)
 
@@ -591,15 +596,17 @@ if __name__ == '__main__':
         label_shape = label.shape
         print(f"image shape: {img_shape}, label shape: {label_shape}")
 
+        max_iterations = 25000
+        eval_num = 500
         # Training
         if mode == "train":
             global_step = 0
-            max_iterations = 25000
-            eval_num = 500
+            running_time = 0
 
             dice_val_best = 0.0
             dice_val_list_best = 0.0
             global_step_best = 0
+            time_best = 0
             epoch_loss_values = []
             dice_values_list = []
             # checkpoint if exists
@@ -608,8 +615,8 @@ if __name__ == '__main__':
                 model.load_state_dict(torch.load(os.path.join(root_dir, model_save_prefix + "_best_metric_model.pth")))
             while global_step < max_iterations:
                 logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
-                global_step, dice_val_best, global_step_best, dice_val_list_best = train(
-                    global_step, train_loader, dice_val_best, global_step_best, dice_val_list_best, model_save_prefix
+                global_step, running_time, dice_val_best, global_step_best, time_best, dice_val_list_best = train(
+                    global_step, running_time, train_loader, dice_val_best, global_step_best, time_best, dice_val_list_best, model_save_prefix
                 )
                 logger_file.close()
                 
@@ -630,12 +637,14 @@ if __name__ == '__main__':
             print(
                 "train completed, best dice: {} ".format(dice_val_best) +
                 "per class: {} ".format(dice_val_list_best) +
-                "at iteration: {}".format(global_step_best)
+                "at iteration: {}".format(global_step_best) +
+                "at time: {}".format(time_best)
             )
             logger_file = open(os.path.join(root_dir, model_save_prefix + "_logger.txt"), "a")
             logger_file.write("train completed, best dice: {} ".format(dice_val_best) +
                 "per class: {} ".format(dice_val_list_best) +
-                "at iteration: {}\n".format(global_step_best))
+                "at iteration: {}\n".format(global_step_best) +
+                "at time: {}".format(time_best))
             logger_file.close()
 
             # Performance visualization
